@@ -153,7 +153,11 @@ activemq-data/
 .venv
 env/
 venv/
+!swarmsim/env/
+!swarmsim/env/**
 ENV/
+!swarmsim/env/
+!swarmsim/env/**
 env.bak/
 venv.bak/
 

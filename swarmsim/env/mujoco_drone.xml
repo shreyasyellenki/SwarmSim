@@ -1,0 +1,40 @@
+<mujoco model="swarm_drone">
+  <option timestep="0.01" integrator="RK4" gravity="0 0 -9.81"/>
+
+  <default>
+    <geom contype="1" conaffinity="1" friction="0.5 0.1 0.1"/>
+    <motor ctrllimited="true"/>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.35 0.55 0.75" rgb2="0.05 0.05 0.1" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1="0.25 0.3 0.35" rgb2="0.15 0.18 0.22"/>
+    <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.15"/>
+    <material name="drone_mat" rgba="0.2 0.55 0.85 1"/>
+    <material name="waypoint_mat" rgba="1.0 0.25 0.2 0.6"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 4" dir="0 0 -1" diffuse="0.9 0.9 0.9"/>
+    <geom name="floor" type="plane" size="5 5 0.1" material="grid"/>
+
+    <body name="drone" pos="0 0 1">
+      <freejoint name="drone_free"/>
+      <inertial pos="0 0 0" mass="1.0" diaginertia="0.02 0.02 0.04"/>
+      <geom name="body" type="box" size="0.12 0.12 0.04" material="drone_mat"/>
+      <site name="motor_fl" pos="0.14 0.14 0" size="0.02"/>
+      <site name="motor_fr" pos="0.14 -0.14 0" size="0.02"/>
+      <site name="motor_rl" pos="-0.14 0.14 0" size="0.02"/>
+      <site name="motor_rr" pos="-0.14 -0.14 0" size="0.02"/>
+    </body>
+
+    <site name="waypoint_marker" pos="1 1 1.2" size="0.12" material="waypoint_mat"/>
+  </worldbody>
+
+  <actuator>
+    <motor name="thrust_fl" site="motor_fl" gear="0 0 1" ctrlrange="0 12"/>
+    <motor name="thrust_fr" site="motor_fr" gear="0 0 1" ctrlrange="0 12"/>
+    <motor name="thrust_rl" site="motor_rl" gear="0 0 1" ctrlrange="0 12"/>
+    <motor name="thrust_rr" site="motor_rr" gear="0 0 1" ctrlrange="0 12"/>
+  </actuator>
+</mujoco>
