@@ -1,0 +1,123 @@
+# SwarmSim — single source of truth for all hyperparameters.
+# Change one section at a time when tuning.
+
+stage1_mujoco:
+  xml_path: env/mujoco_drone.xml
+  obs_dim: 9
+  action_dim: 4
+  episode_horizon: 500
+  success_radius: 0.3
+  waypoint_range:
+    x: [-2.0, 2.0]
+    y: [-2.0, 2.0]
+    z: [0.8, 2.5]
+  spawn_range:
+    x: [-0.5, 0.5]
+    y: [-0.5, 0.5]
+    z: [0.8, 1.5]
+  reward:
+    distance_scale: 1.0
+    success_bonus: 10.0
+    alive_bonus: 0.01
+    crash_penalty: 5.0
+
+ppo:
+  rollout_steps: 2048
+  num_epochs: 10
+  minibatch_size: 64
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  learning_rate: 0.0003
+  max_grad_norm: 0.5
+
+training:
+  total_timesteps: 500000
+  swarm_total_timesteps: 1000000
+  log_interval: 10
+  save_interval: 50
+  weights_dir: weights
+  mujoco_policy: mujoco_policy.pt
+  swarm_policy: swarm_policy.pt
+  tensorboard_dir: runs
+
+env:
+  num_agents: 6
+  grid_size: 32
+  local_window_k: 5
+  comm_radius: 8
+  max_neighbors: 3
+  episode_horizon: 500
+  coverage_target: 0.85
+  world_size: 1.0
+
+reward:
+  alpha: 1.0
+  beta: 0.1
+  gamma: 0.01
+
+comm:
+  message_dim: 8
+  mode: full
+
+critic:
+  grid_downsample: 8
+
+eval:
+  num_seeds: 50
+  episodes_per_seed: 20
+  metric: time_to_90pct_coverage
+  coverage_threshold: 0.90
+  seeds:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+    - 28
+    - 29
+    - 30
+    - 31
+    - 32
+    - 33
+    - 34
+    - 35
+    - 36
+    - 37
+    - 38
+    - 39
+    - 40
+    - 41
+    - 42
+    - 43
+    - 44
+    - 45
+    - 46
+    - 47
+    - 48
+    - 49

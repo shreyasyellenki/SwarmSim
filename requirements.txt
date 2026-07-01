@@ -1,0 +1,11 @@
+torch>=2.0
+vmas
+mujoco
+gymnasium
+fastapi
+uvicorn[standard]
+websockets
+numpy
+pyyaml
+tensorboard
+matplotlib
