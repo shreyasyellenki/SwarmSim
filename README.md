@@ -51,10 +51,11 @@ python -m swarmsim.analysis.comm_analysis --weights weights/swarm_policy_full.pt
 ## Live demo
 
 ```bash
-chmod +x scripts/run_demo.sh
-./scripts/run_demo.sh
-# Open http://localhost:8000
+source .venv/bin/activate
+bash scripts/run_demo.sh
 ```
+
+Then open [http://localhost:8000](http://localhost:8000) in your browser.
 
 ## Project structure
 
