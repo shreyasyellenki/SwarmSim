@@ -22,10 +22,17 @@ def set_comm_mode(cfg: dict, mode: str) -> dict:
     return updated
 
 
-def train(comm_mode: str = "full", total_timesteps: int | None = None, num_envs: int = 8) -> Path:
+def train(
+    comm_mode: str = "full",
+    total_timesteps: int | None = None,
+    num_envs: int = 8,
+    rollout_steps: int | None = None,
+) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ppo_cfg = PPOConfig.from_config(cfg)
+    if rollout_steps is not None:
+        ppo_cfg.rollout_steps = rollout_steps
     train_cfg = cfg["training"]
     env_cfg = cfg["env"]
     comm_cfg = cfg["comm"]
@@ -44,7 +51,7 @@ def train(comm_mode: str = "full", total_timesteps: int | None = None, num_envs:
     trainer = SwarmPPOTrainer(actor, critic, ppo_cfg, device)
 
     steps_per_rollout = ppo_cfg.rollout_steps
-    buffer = SwarmRolloutBuffer(steps_per_rollout * num_agents, obs_dim, action_dim, device)
+    buffer = SwarmRolloutBuffer(steps_per_rollout * num_agents * num_envs, obs_dim, action_dim, device)
 
     weights_dir = Path(__file__).resolve().parents[2] / train_cfg["weights_dir"]
     weights_dir.mkdir(parents=True, exist_ok=True)
@@ -60,7 +67,7 @@ def train(comm_mode: str = "full", total_timesteps: int | None = None, num_envs:
     episode_count = 0
 
     while global_step < total_timesteps:
-        for _ in range(steps_per_rollout):
+        while not buffer.full() and global_step < total_timesteps:
             global_state = scenario.build_global_state()
             actions_to_env = []
             step_records = []
@@ -86,7 +93,7 @@ def train(comm_mode: str = "full", total_timesteps: int | None = None, num_envs:
             if done_flag.ndim > 1:
                 done_flag = done_flag.any(dim=-1)
 
-            for agent_idx, (agent_obs, gs, action, log_prob, value) in enumerate(step_records):
+            for agent_obs, gs, action, log_prob, value in step_records:
                 for env_i in range(num_envs):
                     buffer.add(
                         agent_obs[env_i],
@@ -97,35 +104,30 @@ def train(comm_mode: str = "full", total_timesteps: int | None = None, num_envs:
                         value[env_i],
                         log_prob[env_i],
                     )
-                    if buffer.full():
-                        break
-                if buffer.full():
-                    break
 
             global_step += num_envs
-
             episode_returns += team_reward
             if done_flag.any():
                 finished = int(done_flag.sum().item())
                 mean_return = episode_returns[done_flag].mean().item() if finished > 0 else 0.0
                 writer.add_scalar("train/episode_return", mean_return, episode_count)
                 writer.add_scalar("train/coverage", scenario.coverage.mean().item(), episode_count)
-                if scenario.outgoing_messages is not None:
-                    writer.add_scalar(
-                        "train/message_l2",
-                        scenario.outgoing_messages.norm(dim=-1).mean().item(),
-                        episode_count,
-                    )
+                writer.add_scalar(
+                    "train/message_l2",
+                    scenario.outgoing_messages.norm(dim=-1).mean().item(),
+                    episode_count,
+                )
                 episode_returns[done_flag] = 0.0
                 episode_count += finished
 
             obs = next_obs
-            if buffer.full():
-                break
+
+        if buffer.ptr == 0:
+            break
 
         with torch.no_grad():
             last_global = scenario.build_global_state()
-            last_value = critic(last_global)[0]
+            last_value = critic(last_global).mean()
         buffer.compute_gae(last_value, ppo_cfg.gamma, ppo_cfg.gae_lambda)
         metrics = trainer.update(buffer)
         buffer.reset()
@@ -149,5 +151,6 @@ if __name__ == "__main__":
     parser.add_argument("--comm-mode", choices=["full", "null", "none"], default="full")
     parser.add_argument("--timesteps", type=int, default=None)
     parser.add_argument("--num-envs", type=int, default=8)
+    parser.add_argument("--rollout-steps", type=int, default=None)
     args = parser.parse_args()
-    train(args.comm_mode, args.timesteps, args.num_envs)
+    train(args.comm_mode, args.timesteps, args.num_envs, args.rollout_steps)

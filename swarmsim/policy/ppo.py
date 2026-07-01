@@ -23,7 +23,7 @@ class PPOConfig:
     max_grad_norm: float = 0.5
 
     @classmethod
-    from_config(cls, cfg: dict) -> "PPOConfig":
+    def from_config(cls, cfg: dict) -> "PPOConfig":
         p = cfg["ppo"]
         return cls(**p)
 
@@ -59,14 +59,15 @@ class RolloutBuffer:
         self.ptr = 0
 
     def compute_gae(self, last_value: torch.Tensor, gamma: float, lam: float):
+        n = self.ptr
         last_gae = 0.0
-        for t in reversed(range(self.size)):
+        for t in reversed(range(n)):
             next_non_terminal = 1.0 - self.dones[t]
-            next_value = last_value if t == self.size - 1 else self.values[t + 1]
+            next_value = last_value if t == n - 1 else self.values[t + 1]
             delta = self.rewards[t] + gamma * next_value * next_non_terminal - self.values[t]
             last_gae = delta + gamma * lam * next_non_terminal * last_gae
             self.advantages[t] = last_gae
-        self.returns = self.advantages + self.values
+        self.returns[:n] = self.advantages[:n] + self.values[:n]
 
 
 class SwarmRolloutBuffer:
@@ -108,14 +109,15 @@ class SwarmRolloutBuffer:
       self.ptr = 0
 
   def compute_gae(self, last_value: torch.Tensor, gamma: float, lam: float):
+      n = self.ptr
       last_gae = 0.0
-      for t in reversed(range(self.size)):
+      for t in reversed(range(n)):
           next_non_terminal = 1.0 - self.dones[t]
-          next_value = last_value if t == self.size - 1 else self.values[t + 1]
+          next_value = last_value if t == n - 1 else self.values[t + 1]
           delta = self.rewards[t] + gamma * next_value * next_non_terminal - self.values[t]
           last_gae = delta + gamma * lam * next_non_terminal * last_gae
           self.advantages[t] = last_gae
-      self.returns = self.advantages + self.values
+      self.returns[:n] = self.advantages[:n] + self.values[:n]
 
 
 class PPOTrainer:
@@ -130,12 +132,11 @@ class PPOTrainer:
         obs = buffer.obs
         actions = buffer.actions
         old_log_probs = buffer.log_probs
-        advantages = buffer.advantages
-        returns = buffer.returns
-
+        n = buffer.ptr
+        advantages = buffer.advantages[:n]
+        returns = buffer.returns[:n]
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        n = buffer.size
         indices = np.arange(n)
         policy_losses, value_losses, entropies = [], [], []
 
@@ -191,12 +192,11 @@ class SwarmPPOTrainer:
         global_states = buffer.global_states
         actions = buffer.actions
         old_log_probs = buffer.log_probs
-        advantages = buffer.advantages
-        returns = buffer.returns
-
+        n = buffer.ptr
+        advantages = buffer.advantages[:n]
+        returns = buffer.returns[:n]
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        n = buffer.size
         indices = np.arange(n)
         policy_losses, value_losses, entropies = [], [], []
 

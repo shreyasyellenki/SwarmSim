@@ -6,7 +6,8 @@ Multi-agent RL drone swarm with emergent communication and real-time visualizati
 **Stage 2:** Multi-agent grid exploration in VMAS with learned 8-dim message vectors  
 **Demo:** VMAS rollout streamed via FastAPI WebSocket to a Three.js dashboard
 
-Design doc: [`SwarmSim_Altered_Design_Doc.md`](SwarmSim_Altered_Design_Doc.md)
+Design doc: [`SwarmSim_Altered_Design_Doc.md`](SwarmSim_Altered_Design_Doc.md)  
+Stage 1 (optional, sidelined): [`agents_stage_1.md`](agents_stage_1.md)
 
 ## Setup
 
@@ -28,8 +29,11 @@ python -m swarmsim.policy.train_mujoco --timesteps 50000
 ## Stage 2 — VMAS swarm training
 
 ```bash
-# Full communication
-python -m swarmsim.policy.train_swarm --comm-mode full --timesteps 100000
+# Full communication (short smoke test)
+python -m swarmsim.policy.train_swarm --comm-mode full --timesteps 10000 --num-envs 2 --rollout-steps 128
+
+# Full training run
+python -m swarmsim.policy.train_swarm --comm-mode full
 
 # Ablation baselines
 python -m swarmsim.policy.train_swarm --comm-mode null --timesteps 100000

@@ -58,7 +58,8 @@ class SwarmExplorationScenario(BaseScenario):
         self.plot_grid = True
         self.grid_spacing = self.cell_size
 
-        colors = [Color.BLUE, Color.GREEN, Color.RED, Color.ORANGE, Color.VIOLET, Color.GRAY]
+        action_size = 2 if self.comm_mode == "none" else 2 + self.message_dim
+        colors = [Color.BLUE, Color.GREEN, Color.RED, Color.ORANGE, Color.PURPLE, Color.GRAY]
         for i in range(self.num_agents):
             agent = Agent(
                 name=f"agent_{i}",
@@ -67,6 +68,7 @@ class SwarmExplorationScenario(BaseScenario):
                 shape=Sphere(radius=0.02),
                 u_range=1.0,
                 u_multiplier=0.6,
+                action_size=action_size,
             )
             world.add_agent(agent)
 
@@ -106,7 +108,6 @@ class SwarmExplorationScenario(BaseScenario):
         for agent in self.world.agents:
             pos = torch.empty(self.world.dim_p, device=self.world.device)
             pos.uniform_(-self.world_size / 2.0 + 0.1, self.world_size / 2.0 - 0.1)
-            pos[2] = 0.0
             agent.set_pos(pos, batch_index=env_index)
             agent.set_vel(torch.zeros(self.world.dim_p, device=self.world.device), batch_index=env_index)
 
@@ -173,7 +174,7 @@ class SwarmExplorationScenario(BaseScenario):
             self.neighbor_rel_pos[:, receiver_id] = padded_rel
             self.incoming_messages[:, receiver_id] = padded_msg
 
-    def _post_step(self):
+    def post_step(self):
         self._step_count += 1
         self._mark_all_agents()
         self._update_communication_for_env()
@@ -207,17 +208,12 @@ class SwarmExplorationScenario(BaseScenario):
         return torch.cat([norm_pos, norm_vel, local, rel, msgs], dim=-1)
 
     def reward(self, agent: Agent):
-        agent_index = self.world.agents.index(agent)
-        if agent_index == 0:
-            self._post_step()
-
         r = self.reward_cfg
         team_reward = r["alpha"] * self.new_cells
         cx, cy = self._world_to_cell(agent.state.pos)
         batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
         revisit = (self.visit_count[batch_idx, cx, cy] > 1).float()
-        collision = agent.collision.float()
-        return team_reward - r["beta"] * collision - r["gamma"] * revisit
+        return team_reward - r["gamma"] * revisit
 
     def done(self):
         return self.coverage >= self.coverage_target
@@ -278,7 +274,7 @@ def make_swarm_env(
     action_dim = 2 + (0 if comm_mode == "none" else message_dim)
 
     env = vmas.make_env(
-        scenario=SwarmExplorationScenario,
+        scenario=SwarmExplorationScenario(),
         num_envs=num_envs,
         device=device,
         continuous_actions=True,
