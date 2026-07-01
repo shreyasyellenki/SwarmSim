@@ -23,19 +23,26 @@ sim_running = True
 class SwarmSimulator:
     def __init__(self, cfg: dict, weights_path: Path):
         self.cfg = cfg
+        self.demo_cfg = cfg.get("demo", {"sim_hz": 12, "deterministic": True})
         self.device = torch.device("cpu")
         self.env, _ = make_swarm_env(cfg, num_envs=1, device="cpu")
         self.scenario = self.env.scenario
         self.actor, _ = load_policy(weights_path, cfg, self.device)
+        self.actor.eval()
         self.obs = self.env.reset()
         self.step_count = 0
 
     def step_once(self) -> dict:
         num_agents = self.cfg["env"]["num_agents"]
         actions = []
+        deterministic = self.demo_cfg.get("deterministic", True)
         with torch.no_grad():
             for agent_idx in range(num_agents):
-                move, message, _, _ = self.actor.act(self.obs[agent_idx].to(self.device))
+                agent_obs = self.obs[agent_idx].to(self.device)
+                if deterministic:
+                    move, message = self.actor.act_deterministic(agent_obs)
+                else:
+                    move, message, _, _ = self.actor.act(agent_obs)
                 if message is None:
                     actions.append(move)
                 else:
@@ -96,12 +103,14 @@ async def lifespan(app: FastAPI):
     cfg = load_config()
     weights = _resolve_weights(cfg)
     simulator = SwarmSimulator(cfg, weights)
+    sim_hz = float(cfg.get("demo", {}).get("sim_hz", 12))
+    sim_interval = 1.0 / sim_hz
 
     async def run_simulation():
         global latest_state, sim_running
         while sim_running:
             latest_state = simulator.step_once()
-            await asyncio.sleep(0)
+            await asyncio.sleep(sim_interval)
 
     task = asyncio.create_task(run_simulation())
     yield

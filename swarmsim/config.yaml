@@ -65,6 +65,10 @@ comm:
 critic:
   grid_downsample: 8
 
+demo:
+  sim_hz: 12              # simulation steps per second (watchable; was unlimited)
+  deterministic: true     # use mean actions, not noisy samples
+
 eval:
   num_seeds: 50
   episodes_per_seed: 20

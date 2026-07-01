@@ -71,6 +71,10 @@ class SwarmActor(nn.Module):
         message = torch.tanh(self.message_head(hidden))
         return movement, message
 
+    def act_deterministic(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Mean action for inference / demo (no sampling noise)."""
+        return self.forward(obs)
+
     def act(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
         movement, message = self.forward(obs)
         std = self.log_std.exp().expand_as(movement)

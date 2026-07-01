@@ -67,7 +67,8 @@ class SwarmExplorationScenario(BaseScenario):
                 color=colors[i % len(colors)],
                 shape=Sphere(radius=0.02),
                 u_range=1.0,
-                u_multiplier=0.6,
+                u_multiplier=0.4,
+                max_speed=0.12,
                 action_size=action_size,
             )
             world.add_agent(agent)
