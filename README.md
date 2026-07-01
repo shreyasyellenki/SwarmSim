@@ -7,6 +7,7 @@ Multi-agent RL drone swarm with emergent communication and real-time visualizati
 **Demo:** VMAS rollout streamed via FastAPI WebSocket to a Three.js dashboard
 
 Design doc: [`SwarmSim_Altered_Design_Doc.md`](SwarmSim_Altered_Design_Doc.md)  
+**Agent context (start here):** [`agents.md`](agents.md)  
 Stage 1 (optional, sidelined): [`agents_stage_1.md`](agents_stage_1.md)
 
 ## Setup

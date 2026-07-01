@@ -66,13 +66,20 @@ function idToColor(id) {
 
 function updateGrid(gridB64) {
   const raw = Uint8Array.from(atob(gridB64), (c) => c.charCodeAt(0));
-  for (let i = 0; i < raw.length; i++) {
-    const color = idToColor(raw[i]);
-    const j = i * 4;
-    gridData[j] = color.r;
-    gridData[j + 1] = color.g;
-    gridData[j + 2] = color.b;
-    gridData[j + 3] = 255;
+  const n = GRID_SIZE;
+  // NumPy sends explored[cx, cy] row-major (cx * n + cy).
+  // Flip Y and map cx -> texture X so cells align with agent normToWorld().
+  for (let cx = 0; cx < n; cx++) {
+    for (let cy = 0; cy < n; cy++) {
+      const agentId = raw[cx * n + cy];
+      const color = idToColor(agentId);
+      const ty = n - 1 - cy;
+      const dst = (ty * n + cx) * 4;
+      gridData[dst] = color.r;
+      gridData[dst + 1] = color.g;
+      gridData[dst + 2] = color.b;
+      gridData[dst + 3] = 255;
+    }
   }
   texture.needsUpdate = true;
 }
