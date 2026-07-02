@@ -223,6 +223,8 @@ runs/
 analysis_output/
 weights/*.pt
 !weights/.gitkeep
+logs/
+STORYLINE.md
 
 # Streamlit
 .streamlit/secrets.toml

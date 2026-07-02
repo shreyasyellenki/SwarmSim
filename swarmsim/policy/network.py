@@ -54,14 +54,21 @@ class ActorCritic(nn.Module):
 class SwarmActor(nn.Module):
     """Shared actor with movement + message heads for Stage 2."""
 
-    def __init__(self, obs_dim: int, message_dim: int = 8, hidden: int = 256, comm_mode: str = "full"):
+    def __init__(
+        self,
+        obs_dim: int,
+        message_dim: int = 8,
+        hidden: int = 256,
+        comm_mode: str = "full",
+        init_log_std: float = 0.0,
+    ):
         super().__init__()
         self.comm_mode = comm_mode
         self.message_dim = message_dim
         self.body = mlp([obs_dim, hidden, hidden])
         self.movement_head = nn.Linear(hidden, 2)
         self.message_head = nn.Linear(hidden, message_dim) if comm_mode != "none" else None
-        self.log_std = nn.Parameter(torch.zeros(2))
+        self.log_std = nn.Parameter(torch.full((2,), float(init_log_std)))
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         obs = torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)

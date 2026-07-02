@@ -56,7 +56,10 @@ env:
 reward:
   alpha: 1.0
   beta: 0.1
-  gamma: 0.01
+  gamma: 0.3          # revisit penalty (bumped from 0.01 after gamma sweep; see STORYLINE.md)
+
+policy:
+  init_log_std: 0.0   # initial log std of movement Gaussian (std=exp(this)); lower = less action noise
 
 comm:
   message_dim: 8

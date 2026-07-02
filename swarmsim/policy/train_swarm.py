@@ -27,8 +27,15 @@ def train(
     total_timesteps: int | None = None,
     num_envs: int = 8,
     rollout_steps: int | None = None,
+    revisit_gamma: float | None = None,
+    save_name: str | None = None,
+    init_log_std: float | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
+    if revisit_gamma is not None:
+        cfg["reward"]["gamma"] = revisit_gamma
+    if init_log_std is not None:
+        cfg.setdefault("policy", {})["init_log_std"] = init_log_std
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ppo_cfg = PPOConfig.from_config(cfg)
     if rollout_steps is not None:
@@ -46,7 +53,10 @@ def train(
     obs_dim = swarm_obs_dim(env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"])
     global_dim = swarm_global_dim(num_agents, cfg["critic"]["grid_downsample"])
 
-    actor = SwarmActor(obs_dim, comm_cfg["message_dim"], comm_mode=comm_cfg["mode"]).to(device)
+    actor_log_std = cfg.get("policy", {}).get("init_log_std", 0.0)
+    actor = SwarmActor(
+        obs_dim, comm_cfg["message_dim"], comm_mode=comm_cfg["mode"], init_log_std=actor_log_std
+    ).to(device)
     critic = CentralizedCritic(global_dim).to(device)
     trainer = SwarmPPOTrainer(actor, critic, ppo_cfg, device)
 
@@ -55,9 +65,11 @@ def train(
 
     weights_dir = Path(__file__).resolve().parents[2] / train_cfg["weights_dir"]
     weights_dir.mkdir(parents=True, exist_ok=True)
-    save_path = weights_dir / f"swarm_policy_{comm_mode}.pt"
+    weight_stem = save_name or f"swarm_policy_{comm_mode}"
+    save_path = weights_dir / f"{weight_stem}.pt"
 
-    log_dir = Path(__file__).resolve().parents[2] / train_cfg["tensorboard_dir"] / f"swarm_{comm_mode}"
+    run_name = weight_stem.removeprefix("swarm_policy_")
+    log_dir = Path(__file__).resolve().parents[2] / train_cfg["tensorboard_dir"] / run_name
     writer = SummaryWriter(log_dir=str(log_dir))
 
     obs = env.reset()
@@ -67,6 +79,16 @@ def train(
     episode_count = 0
     nan_recoveries = 0
     last_good: dict[str, dict] | None = None
+
+    def build_checkpoint() -> dict:
+        ckpt = {
+            "actor": actor.state_dict(),
+            "critic": critic.state_dict(),
+            "comm_mode": comm_mode,
+            "revisit_gamma": cfg["reward"]["gamma"],
+            "init_log_std": cfg.get("policy", {}).get("init_log_std", 0.0),
+        }
+        return ckpt
 
     while global_step < total_timesteps:
         while not buffer.full() and global_step < total_timesteps:
@@ -175,20 +197,21 @@ def train(
         if update_idx % train_cfg["log_interval"] == 0:
             for k, v in metrics.items():
                 writer.add_scalar(f"train/{k}", v, update_idx)
+            if revisit_gamma is not None:
+                writer.add_scalar("train/revisit_gamma", revisit_gamma, update_idx)
 
         if update_idx % train_cfg["save_interval"] == 0:
-            torch.save(
-                {"actor": actor.state_dict(), "critic": critic.state_dict(), "comm_mode": comm_mode},
-                save_path,
-            )
+            torch.save(build_checkpoint(), save_path)
+
+    checkpoint = build_checkpoint()
 
     if not _params_finite(actor, critic) and last_good is not None:
         actor.load_state_dict(last_good["actor"])
         critic.load_state_dict(last_good["critic"])
 
-    torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(), "comm_mode": comm_mode}, save_path)
+    torch.save(checkpoint, save_path)
     writer.close()
-    print(f"Swarm training complete ({comm_mode}). Weights saved to {save_path}")
+    print(f"Swarm training complete ({comm_mode}, revisit_gamma={cfg['reward']['gamma']}). Weights saved to {save_path}")
     return save_path
 
 
@@ -198,5 +221,16 @@ if __name__ == "__main__":
     parser.add_argument("--timesteps", type=int, default=None)
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--rollout-steps", type=int, default=None)
+    parser.add_argument("--gamma", type=float, default=None, help="Revisit penalty (reward.gamma)")
+    parser.add_argument("--save-name", type=str, default=None, help="Weight filename stem, e.g. swarm_policy_full_gamma03")
+    parser.add_argument("--init-log-std", type=float, default=None, help="Initial log std of movement Gaussian")
     args = parser.parse_args()
-    train(args.comm_mode, args.timesteps, args.num_envs, args.rollout_steps)
+    train(
+        args.comm_mode,
+        args.timesteps,
+        args.num_envs,
+        args.rollout_steps,
+        revisit_gamma=args.gamma,
+        save_name=args.save_name,
+        init_log_std=args.init_log_std,
+    )
