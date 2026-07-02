@@ -30,7 +30,15 @@ def load_policy(weights_path: Path, cfg: dict, device: torch.device):
     return actor, comm_mode
 
 
-def run_episode(env, actor, scenario, cfg: dict, device: torch.device, seed: int | None = None):
+def run_episode(
+    env,
+    actor,
+    scenario,
+    cfg: dict,
+    device: torch.device,
+    seed: int | None = None,
+    deterministic: bool = True,
+):
     env_cfg = cfg["env"]
     num_agents = env_cfg["num_agents"]
     obs = env.reset(seed=seed)
@@ -44,7 +52,11 @@ def run_episode(env, actor, scenario, cfg: dict, device: torch.device, seed: int
         actions = []
         with torch.no_grad():
             for agent_idx in range(num_agents):
-                move, message, _, _ = actor.act(obs[agent_idx].to(device))
+                agent_obs = obs[agent_idx].to(device)
+                if deterministic:
+                    move, message = actor.act_deterministic(agent_obs)
+                else:
+                    move, message, _, _ = actor.act(agent_obs)
                 if message is None:
                     actions.append(move)
                 else:
@@ -89,7 +101,12 @@ def run_episode(env, actor, scenario, cfg: dict, device: torch.device, seed: int
     return time_to_threshold, coverage, trajectory
 
 
-def evaluate(weights_path: Path, comm_mode: str | None = None, episodes: int | None = None) -> dict:
+def evaluate(
+    weights_path: Path,
+    comm_mode: str | None = None,
+    episodes: int | None = None,
+    deterministic: bool = True,
+) -> dict:
     cfg = load_config()
     if comm_mode:
         cfg["comm"]["mode"] = comm_mode
@@ -107,7 +124,9 @@ def evaluate(weights_path: Path, comm_mode: str | None = None, episodes: int | N
     for seed in seeds:
         for ep in range(episodes_per_seed):
             episode_seed = seed * 1000 + ep
-            t, cov, _ = run_episode(env, actor, scenario, cfg, device, seed=episode_seed)
+            t, cov, _ = run_episode(
+                env, actor, scenario, cfg, device, seed=episode_seed, deterministic=deterministic
+            )
             times.append(t)
             coverages.append(cov)
 
@@ -128,7 +147,10 @@ if __name__ == "__main__":
     parser.add_argument("--comm-mode", choices=["full", "null", "none"], default=None)
     parser.add_argument("--episodes", type=int, default=None)
     parser.add_argument("--export", type=Path, default=None, help="Export one rollout JSON")
+    parser.add_argument("--stochastic", action="store_true", help="Use stochastic policy sampling")
     args = parser.parse_args()
+
+    deterministic = not args.stochastic
 
     if args.export:
         cfg = load_config()
@@ -137,9 +159,11 @@ if __name__ == "__main__":
         device = torch.device("cpu")
         env, _ = make_swarm_env(cfg, num_envs=1, device="cpu")
         actor, _ = load_policy(args.weights, cfg, device)
-        _, _, traj = run_episode(env, actor, env.scenario, cfg, device, seed=0)
+        _, _, traj = run_episode(
+            env, actor, env.scenario, cfg, device, seed=0, deterministic=deterministic
+        )
         args.export.write_text(json.dumps(traj))
         print(f"Exported rollout to {args.export}")
     else:
-        results = evaluate(args.weights, args.comm_mode, args.episodes)
+        results = evaluate(args.weights, args.comm_mode, args.episodes, deterministic=deterministic)
         print(json.dumps(results, indent=2))
