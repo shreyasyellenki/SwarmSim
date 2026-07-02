@@ -76,9 +76,14 @@ class SwarmActor(nn.Module):
         """Mean action for inference / demo (no sampling noise)."""
         return self.forward(obs)
 
+    def _movement_std(self, movement: torch.Tensor) -> torch.Tensor:
+        movement = torch.nan_to_num(movement, nan=0.0, posinf=1.0, neginf=-1.0)
+        std = self.log_std.clamp(-5.0, 2.0).exp().expand_as(movement)
+        return movement, std
+
     def act(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
         movement, message = self.forward(obs)
-        std = self.log_std.exp().expand_as(movement)
+        movement, std = self._movement_std(movement)
         dist = Normal(movement, std)
         action_move = dist.sample()
         action_move = torch.clamp(action_move, -1.0, 1.0)
@@ -89,7 +94,7 @@ class SwarmActor(nn.Module):
         self, obs: torch.Tensor, action_move: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         movement, message = self.forward(obs)
-        std = self.log_std.exp().expand_as(movement)
+        movement, std = self._movement_std(movement)
         dist = Normal(movement, std)
         log_prob = dist.log_prob(action_move).sum(-1)
         entropy = dist.entropy().sum(-1)

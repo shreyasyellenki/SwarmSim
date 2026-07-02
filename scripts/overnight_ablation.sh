@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Overnight 1M-step communication ablation: train none/null/full back-to-back,
-# then run the ablation eval. Wrapped in caffeinate by run_overnight.sh so the
-# Mac does not sleep. All output is timestamped to logs/overnight_*.log.
+# Communication ablation: train none/null/full back-to-back, then eval.
+# Default 300k steps — long enough for fair comparison and avoids late-training NaNs
+# seen on 1M none runs. Override with ABLATION_STEPS=1000000 if desired.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 PY=.venv/bin/python
-STEPS=1000000
+STEPS="${ABLATION_STEPS:-300000}"
 NUM_ENVS=4
 ROLLOUT=128
 

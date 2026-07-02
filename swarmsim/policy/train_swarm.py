@@ -145,7 +145,17 @@ def train(
             "actor": {k: v.clone() for k, v in actor.state_dict().items()},
             "critic": {k: v.clone() for k, v in critic.state_dict().items()},
         }
-        metrics = trainer.update(buffer)
+        try:
+            metrics = trainer.update(buffer)
+        except (ValueError, RuntimeError) as exc:
+            nan_recoveries += 1
+            restore = last_good or pre_update
+            actor.load_state_dict(restore["actor"])
+            critic.load_state_dict(restore["critic"])
+            writer.add_scalar("train/nan_recoveries", nan_recoveries, update_idx)
+            print(f"Warning: PPO update failed ({exc}); restored last checkpoint.")
+            buffer.reset()
+            continue
         if not _params_finite(actor, critic):
             nan_recoveries += 1
             restore = last_good or pre_update
