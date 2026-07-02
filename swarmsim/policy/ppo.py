@@ -135,7 +135,12 @@ class PPOTrainer:
         n = buffer.ptr
         advantages = buffer.advantages[:n]
         returns = buffer.returns[:n]
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        adv_mean = advantages.mean()
+        adv_std = advantages.std(unbiased=False)
+        if torch.isfinite(adv_std) and adv_std > 1e-6:
+            advantages = (advantages - adv_mean) / (adv_std + 1e-8)
+        else:
+            advantages = advantages - adv_mean
 
         indices = np.arange(n)
         policy_losses, value_losses, entropies = [], [], []
@@ -152,6 +157,8 @@ class PPOTrainer:
                 mb_returns = returns[mb]
 
                 log_prob, entropy, values = self.model.evaluate(mb_obs, mb_actions)
+                if not torch.isfinite(log_prob).all() or not torch.isfinite(values).all():
+                    continue
                 ratio = torch.exp(log_prob - mb_old_logp)
                 surr1 = ratio * mb_adv
                 surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * mb_adv
@@ -169,9 +176,9 @@ class PPOTrainer:
                 entropies.append(entropy.mean().item())
 
         return {
-            "policy_loss": float(np.mean(policy_losses)),
-            "value_loss": float(np.mean(value_losses)),
-            "entropy": float(np.mean(entropies)),
+            "policy_loss": float(np.mean(policy_losses)) if policy_losses else 0.0,
+            "value_loss": float(np.mean(value_losses)) if value_losses else 0.0,
+            "entropy": float(np.mean(entropies)) if entropies else 0.0,
         }
 
 
@@ -195,7 +202,12 @@ class SwarmPPOTrainer:
         n = buffer.ptr
         advantages = buffer.advantages[:n]
         returns = buffer.returns[:n]
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        adv_mean = advantages.mean()
+        adv_std = advantages.std(unbiased=False)
+        if torch.isfinite(adv_std) and adv_std > 1e-6:
+            advantages = (advantages - adv_mean) / (adv_std + 1e-8)
+        else:
+            advantages = advantages - adv_mean
 
         indices = np.arange(n)
         policy_losses, value_losses, entropies = [], [], []
@@ -214,6 +226,8 @@ class SwarmPPOTrainer:
 
                 log_prob, entropy, _ = self.actor.evaluate(mb_obs, mb_actions)
                 values = self.critic(mb_global)
+                if not torch.isfinite(log_prob).all() or not torch.isfinite(values).all():
+                    continue
                 ratio = torch.exp(log_prob - mb_old_logp)
                 surr1 = ratio * mb_adv
                 surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * mb_adv
@@ -234,7 +248,7 @@ class SwarmPPOTrainer:
                 entropies.append(entropy.mean().item())
 
         return {
-            "policy_loss": float(np.mean(policy_losses)),
-            "value_loss": float(np.mean(value_losses)),
-            "entropy": float(np.mean(entropies)),
+            "policy_loss": float(np.mean(policy_losses)) if policy_losses else 0.0,
+            "value_loss": float(np.mean(value_losses)) if value_losses else 0.0,
+            "entropy": float(np.mean(entropies)) if entropies else 0.0,
         }
