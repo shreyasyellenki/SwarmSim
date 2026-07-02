@@ -9,6 +9,24 @@ import torch
 import torch.nn as nn
 
 
+def _normalize_advantages(advantages: torch.Tensor) -> torch.Tensor:
+    adv_mean = advantages.mean()
+    adv_std = advantages.std(unbiased=False)
+    if torch.isfinite(adv_std) and adv_std > 1e-6:
+        normalized = (advantages - adv_mean) / (adv_std + 1e-8)
+    else:
+        normalized = advantages - adv_mean
+    return torch.clamp(normalized, -10.0, 10.0)
+
+
+def _params_finite(*modules: nn.Module) -> bool:
+    for module in modules:
+        for param in module.parameters():
+            if not torch.isfinite(param).all():
+                return False
+    return True
+
+
 @dataclass
 class PPOConfig:
     rollout_steps: int = 2048
@@ -133,14 +151,8 @@ class PPOTrainer:
         actions = buffer.actions
         old_log_probs = buffer.log_probs
         n = buffer.ptr
-        advantages = buffer.advantages[:n]
-        returns = buffer.returns[:n]
-        adv_mean = advantages.mean()
-        adv_std = advantages.std(unbiased=False)
-        if torch.isfinite(adv_std) and adv_std > 1e-6:
-            advantages = (advantages - adv_mean) / (adv_std + 1e-8)
-        else:
-            advantages = advantages - adv_mean
+        advantages = _normalize_advantages(buffer.advantages[:n])
+        returns = torch.clamp(buffer.returns[:n], -20.0, 20.0)
 
         indices = np.arange(n)
         policy_losses, value_losses, entropies = [], [], []
@@ -159,17 +171,21 @@ class PPOTrainer:
                 log_prob, entropy, values = self.model.evaluate(mb_obs, mb_actions)
                 if not torch.isfinite(log_prob).all() or not torch.isfinite(values).all():
                     continue
-                ratio = torch.exp(log_prob - mb_old_logp)
+                ratio = torch.exp(torch.clamp(log_prob - mb_old_logp, -20.0, 20.0))
                 surr1 = ratio * mb_adv
                 surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * mb_adv
                 policy_loss = -torch.min(surr1, surr2).mean()
                 value_loss = (mb_returns - values).pow(2).mean()
                 loss = policy_loss + cfg.value_coef * value_loss - cfg.entropy_coef * entropy.mean()
+                if not torch.isfinite(loss):
+                    continue
 
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), cfg.max_grad_norm)
                 self.optimizer.step()
+                if not _params_finite(self.actor, self.critic):
+                    break
 
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
@@ -200,14 +216,8 @@ class SwarmPPOTrainer:
         actions = buffer.actions
         old_log_probs = buffer.log_probs
         n = buffer.ptr
-        advantages = buffer.advantages[:n]
-        returns = buffer.returns[:n]
-        adv_mean = advantages.mean()
-        adv_std = advantages.std(unbiased=False)
-        if torch.isfinite(adv_std) and adv_std > 1e-6:
-            advantages = (advantages - adv_mean) / (adv_std + 1e-8)
-        else:
-            advantages = advantages - adv_mean
+        advantages = _normalize_advantages(buffer.advantages[:n])
+        returns = torch.clamp(buffer.returns[:n], -20.0, 20.0)
 
         indices = np.arange(n)
         policy_losses, value_losses, entropies = [], [], []
@@ -228,12 +238,14 @@ class SwarmPPOTrainer:
                 values = self.critic(mb_global)
                 if not torch.isfinite(log_prob).all() or not torch.isfinite(values).all():
                     continue
-                ratio = torch.exp(log_prob - mb_old_logp)
+                ratio = torch.exp(torch.clamp(log_prob - mb_old_logp, -20.0, 20.0))
                 surr1 = ratio * mb_adv
                 surr2 = torch.clamp(ratio, 1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * mb_adv
                 policy_loss = -torch.min(surr1, surr2).mean()
                 value_loss = (mb_returns - values).pow(2).mean()
                 loss = policy_loss + cfg.value_coef * value_loss - cfg.entropy_coef * entropy.mean()
+                if not torch.isfinite(loss):
+                    continue
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -242,6 +254,8 @@ class SwarmPPOTrainer:
                     cfg.max_grad_norm,
                 )
                 self.optimizer.step()
+                if not _params_finite(self.actor, self.critic):
+                    break
 
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())

@@ -202,7 +202,7 @@ class SwarmExplorationScenario(BaseScenario):
         norm_pos = torch.stack(
             [(pos[:, 0] + half) / self.world_size, (pos[:, 1] + half) / self.world_size], dim=-1
         )
-        norm_vel = vel[:, :2]
+        norm_vel = torch.clamp(vel[:, :2] / 0.12, -1.0, 1.0)
         local = self._local_patch(agent)
         rel = self.neighbor_rel_pos[:, agent_index].reshape(self.world.batch_dim, -1)
         msgs = self.incoming_messages[:, agent_index].reshape(self.world.batch_dim, -1)

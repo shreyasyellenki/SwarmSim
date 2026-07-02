@@ -13,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from swarmsim.env.swarm_env import load_config, make_swarm_env
 from swarmsim.policy.network import CentralizedCritic, SwarmActor, swarm_global_dim, swarm_obs_dim
-from swarmsim.policy.ppo import PPOConfig, SwarmPPOTrainer, SwarmRolloutBuffer
+from swarmsim.policy.ppo import PPOConfig, SwarmPPOTrainer, SwarmRolloutBuffer, _params_finite
 
 
 def set_comm_mode(cfg: dict, mode: str) -> dict:
@@ -65,6 +65,8 @@ def train(
     update_idx = 0
     episode_returns = torch.zeros(num_envs, device=device)
     episode_count = 0
+    nan_recoveries = 0
+    last_good: dict[str, dict] | None = None
 
     while global_step < total_timesteps:
         while not buffer.full() and global_step < total_timesteps:
@@ -73,7 +75,7 @@ def train(
             step_records = []
 
             for agent_idx in range(num_agents):
-                agent_obs = obs[agent_idx].to(device)
+                agent_obs = torch.nan_to_num(obs[agent_idx].to(device), nan=0.0, posinf=1.0, neginf=-1.0)
                 with torch.no_grad():
                     move, message, log_prob, _ = actor.act(agent_obs)
                     value = critic(global_state)
@@ -125,11 +127,38 @@ def train(
         if buffer.ptr == 0:
             break
 
+        if not _params_finite(actor, critic):
+            if last_good is not None:
+                actor.load_state_dict(last_good["actor"])
+                critic.load_state_dict(last_good["critic"])
+            else:
+                raise RuntimeError("Policy parameters became non-finite and no checkpoint is available.")
+
         with torch.no_grad():
             last_global = scenario.build_global_state()
             last_value = critic(last_global).mean()
         buffer.compute_gae(last_value, ppo_cfg.gamma, ppo_cfg.gae_lambda)
+        buffer.advantages[: buffer.ptr] = torch.clamp(buffer.advantages[: buffer.ptr], -10.0, 10.0)
+        buffer.returns[: buffer.ptr] = torch.clamp(buffer.returns[: buffer.ptr], -20.0, 20.0)
+
+        pre_update = {
+            "actor": {k: v.clone() for k, v in actor.state_dict().items()},
+            "critic": {k: v.clone() for k, v in critic.state_dict().items()},
+        }
         metrics = trainer.update(buffer)
+        if not _params_finite(actor, critic):
+            nan_recoveries += 1
+            restore = last_good or pre_update
+            actor.load_state_dict(restore["actor"])
+            critic.load_state_dict(restore["critic"])
+            writer.add_scalar("train/nan_recoveries", nan_recoveries, update_idx)
+            buffer.reset()
+            continue
+
+        last_good = {
+            "actor": {k: v.clone() for k, v in actor.state_dict().items()},
+            "critic": {k: v.clone() for k, v in critic.state_dict().items()},
+        }
         buffer.reset()
         update_idx += 1
 
@@ -138,7 +167,14 @@ def train(
                 writer.add_scalar(f"train/{k}", v, update_idx)
 
         if update_idx % train_cfg["save_interval"] == 0:
-            torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(), "comm_mode": comm_mode}, save_path)
+            torch.save(
+                {"actor": actor.state_dict(), "critic": critic.state_dict(), "comm_mode": comm_mode},
+                save_path,
+            )
+
+    if not _params_finite(actor, critic) and last_good is not None:
+        actor.load_state_dict(last_good["actor"])
+        critic.load_state_dict(last_good["critic"])
 
     torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(), "comm_mode": comm_mode}, save_path)
     writer.close()

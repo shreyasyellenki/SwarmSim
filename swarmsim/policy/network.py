@@ -64,6 +64,7 @@ class SwarmActor(nn.Module):
         self.log_std = nn.Parameter(torch.zeros(2))
 
     def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        obs = torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
         hidden = self.body(obs)
         movement = torch.tanh(self.movement_head(hidden))
         if self.message_head is None:
@@ -103,6 +104,7 @@ class CentralizedCritic(nn.Module):
         self.net = mlp([global_dim, hidden, hidden, 1])
 
     def forward(self, global_state: torch.Tensor) -> torch.Tensor:
+        global_state = torch.nan_to_num(global_state, nan=0.0, posinf=1.0, neginf=-1.0)
         return self.net(global_state).squeeze(-1)
 
 
