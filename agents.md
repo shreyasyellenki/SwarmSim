@@ -144,6 +144,25 @@ Stage 1 MuJoCo is a separate track; weights do not transfer.
 
 ---
 
+## Actor observation (as of Exp 3)
+
+Each agent's observation = `[norm_pos(2), norm_vel(2), local_5x5(25), neighbor_rel(6), incoming_msgs(24), global_map(64)]` = **123 dims** with the global map on.
+
+- **`env.global_map_downsample: 8`** — actor sees an 8×8 coarse "fraction explored" map (shared belief state). Set to `0` to disable (reverts to 59-dim local-only obs).
+- Added in Experiment 3 (Path A) to fix corner-clustering: with only a 5×5 local window, a deterministic policy can't perceive where unexplored space is, so it collapses to a constant heading. The critic already used this downsampled map; now the actor does too (shared helper `_downsampled_explored`).
+- **Tradeoff:** less "purely decentralized" — frame as a shared belief map. On an open grid this also makes comm largely redundant (agents see the same holes); comm becomes load-bearing once observability is tightened (obstacles / private maps).
+
+---
+
+## Reward / policy tuning history (see STORYLINE.md for full log)
+
+- `reward.gamma` (revisit penalty): **0.3** (was 0.01). Sweep 0.01→0.3→0.5 gave 13%→14.9%→13% deterministic coverage.
+- `policy.init_log_std`: **0.0** default; sweep to -0.7/-1.6 did not help (~13%).
+- Ablation (none/null/full) at 300k, γ=0.01: 18.3% / 13.1% / 13.0% — comm did **not** help on open grid.
+- Runs use **300k steps** (1M crashes ~470k on reward saturation → advantage collapse → NaN; guards added in ppo.py/train_swarm.py).
+
+---
+
 ## Common commands
 
 ```bash
