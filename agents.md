@@ -158,6 +158,8 @@ Each agent's observation = `[norm_pos(2), norm_vel(2), local_5x5(25), neighbor_r
 
 - `reward.gamma` (revisit penalty): **0.3** (was 0.01). Sweep 0.01→0.3→0.5 gave 13%→14.9%→13% deterministic coverage.
 - `policy.init_log_std`: **0.0** default; sweep to -0.7/-1.6 did not help (~13%).
+- **Learned log_std without anneal:** policies end at **~+2.0 (std≈7.4)** — noise grows; see Exp 4.
+- **Exp 4 std anneal:** `--std-anneal --entropy-anneal` linearly decays noise; `train_log_std=False` during schedule.
 - Ablation (none/null/full) at 300k, γ=0.01: 18.3% / 13.1% / 13.0% — comm did **not** help on open grid.
 - **Exp 3 global map in actor obs** (300k, γ=0.3): **12.8%** deterministic coverage vs **14.9%** without map — did not fix corner-clustering hypothesis at this budget.
 - Runs use **300k steps** (1M crashes ~470k on reward saturation → advantage collapse → NaN; guards added in ppo.py/train_swarm.py).
