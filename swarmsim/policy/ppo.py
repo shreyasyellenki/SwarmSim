@@ -201,12 +201,18 @@ class PPOTrainer:
 class SwarmPPOTrainer:
     """PPO trainer for swarm actor + centralized critic."""
 
-    def __init__(self, actor: nn.Module, critic: nn.Module, cfg: PPOConfig, device: torch.device):
+    def __init__(
+        self, actor: nn.Module, critic: nn.Module, cfg: PPOConfig, device: torch.device, train_log_std: bool = True
+    ):
         self.actor = actor
         self.critic = critic
         self.cfg = cfg
         self.device = device
-        params = list(actor.parameters()) + list(critic.parameters())
+        if train_log_std:
+            actor_params = list(actor.parameters())
+        else:
+            actor_params = [p for n, p in actor.named_parameters() if n != "log_std"]
+        params = actor_params + list(critic.parameters())
         self.optimizer = torch.optim.Adam(params, lr=cfg.learning_rate)
 
     def update(self, buffer: SwarmRolloutBuffer) -> dict[str, float]:

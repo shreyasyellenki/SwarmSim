@@ -61,6 +61,14 @@ reward:
 
 policy:
   init_log_std: 0.0   # initial log std of movement Gaussian (std=exp(this)); lower = less action noise
+  std_schedule:
+    enabled: false
+    start_log_std: 0.0    # std=1.0 early (explore)
+    end_log_std: -1.6      # std≈0.20 late (commit to mean policy)
+  entropy_schedule:
+    enabled: false
+    start: 0.01
+    end: 0.001
 
 comm:
   message_dim: 8

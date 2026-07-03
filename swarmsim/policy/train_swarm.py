@@ -22,6 +22,47 @@ def set_comm_mode(cfg: dict, mode: str) -> dict:
     return updated
 
 
+def linear_schedule(start: float, end: float, progress: float) -> float:
+    progress = min(1.0, max(0.0, progress))
+    return start + (end - start) * progress
+
+
+def apply_training_schedules(
+    actor: SwarmActor,
+    trainer: SwarmPPOTrainer,
+    cfg: dict,
+    global_step: int,
+    total_timesteps: int,
+) -> dict[str, float]:
+    """Update log_std and entropy_coef from config schedules. Returns logged values."""
+    policy_cfg = cfg.get("policy", {})
+    progress = global_step / max(total_timesteps, 1)
+    logged: dict[str, float] = {}
+
+    std_sched = policy_cfg.get("std_schedule", {})
+    if std_sched.get("enabled"):
+        log_std = linear_schedule(
+            float(std_sched.get("start_log_std", 0.0)),
+            float(std_sched.get("end_log_std", -1.6)),
+            progress,
+        )
+        actor.log_std.data.fill_(log_std)
+        logged["log_std"] = log_std
+        logged["action_std"] = float(torch.exp(actor.log_std).mean().item())
+
+    ent_sched = policy_cfg.get("entropy_schedule", {})
+    if ent_sched.get("enabled"):
+        entropy_coef = linear_schedule(
+            float(ent_sched.get("start", 0.01)),
+            float(ent_sched.get("end", 0.001)),
+            progress,
+        )
+        trainer.cfg.entropy_coef = entropy_coef
+        logged["entropy_coef"] = entropy_coef
+
+    return logged
+
+
 def train(
     comm_mode: str = "full",
     total_timesteps: int | None = None,
@@ -30,12 +71,19 @@ def train(
     revisit_gamma: float | None = None,
     save_name: str | None = None,
     init_log_std: float | None = None,
+    std_anneal: bool = False,
+    entropy_anneal: bool = False,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
         cfg["reward"]["gamma"] = revisit_gamma
     if init_log_std is not None:
         cfg.setdefault("policy", {})["init_log_std"] = init_log_std
+    policy_cfg = cfg.setdefault("policy", {})
+    if std_anneal:
+        policy_cfg.setdefault("std_schedule", {})["enabled"] = True
+    if entropy_anneal:
+        policy_cfg.setdefault("entropy_schedule", {})["enabled"] = True
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ppo_cfg = PPOConfig.from_config(cfg)
     if rollout_steps is not None:
@@ -61,7 +109,8 @@ def train(
         obs_dim, comm_cfg["message_dim"], comm_mode=comm_cfg["mode"], init_log_std=actor_log_std
     ).to(device)
     critic = CentralizedCritic(global_dim).to(device)
-    trainer = SwarmPPOTrainer(actor, critic, ppo_cfg, device)
+    std_schedule_on = policy_cfg.get("std_schedule", {}).get("enabled", False)
+    trainer = SwarmPPOTrainer(actor, critic, ppo_cfg, device, train_log_std=not std_schedule_on)
 
     steps_per_rollout = ppo_cfg.rollout_steps
     buffer = SwarmRolloutBuffer(steps_per_rollout * num_agents * num_envs, obs_dim, action_dim, device)
@@ -94,6 +143,7 @@ def train(
         return ckpt
 
     while global_step < total_timesteps:
+        schedule_vals = apply_training_schedules(actor, trainer, cfg, global_step, total_timesteps)
         while not buffer.full() and global_step < total_timesteps:
             global_state = scenario.build_global_state()
             actions_to_env = []
@@ -202,10 +252,15 @@ def train(
                 writer.add_scalar(f"train/{k}", v, update_idx)
             if revisit_gamma is not None:
                 writer.add_scalar("train/revisit_gamma", revisit_gamma, update_idx)
+            for k, v in schedule_vals.items():
+                writer.add_scalar(f"train/{k}", v, update_idx)
 
         if update_idx % train_cfg["save_interval"] == 0:
             torch.save(build_checkpoint(), save_path)
 
+    checkpoint = build_checkpoint()
+
+    apply_training_schedules(actor, trainer, cfg, total_timesteps, total_timesteps)
     checkpoint = build_checkpoint()
 
     if not _params_finite(actor, critic) and last_good is not None:
@@ -227,6 +282,8 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type=float, default=None, help="Revisit penalty (reward.gamma)")
     parser.add_argument("--save-name", type=str, default=None, help="Weight filename stem, e.g. swarm_policy_full_gamma03")
     parser.add_argument("--init-log-std", type=float, default=None, help="Initial log std of movement Gaussian")
+    parser.add_argument("--std-anneal", action="store_true", help="Linearly anneal log_std per policy.std_schedule")
+    parser.add_argument("--entropy-anneal", action="store_true", help="Linearly decay entropy_coef per policy.entropy_schedule")
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -236,4 +293,6 @@ if __name__ == "__main__":
         revisit_gamma=args.gamma,
         save_name=args.save_name,
         init_log_std=args.init_log_std,
+        std_anneal=args.std_anneal,
+        entropy_anneal=args.entropy_anneal,
     )
