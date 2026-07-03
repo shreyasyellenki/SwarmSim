@@ -41,10 +41,14 @@ class SwarmExplorationScenario(BaseScenario):
         self.comm_mode = comm_cfg.get("mode", "full")
         self.coverage_target = env_cfg["coverage_target"]
         self.reward_cfg = cfg["reward"]
+        self.global_map_downsample = env_cfg.get("global_map_downsample", 0) or 0
+        self.global_map_cells = self.global_map_downsample ** 2
 
         self.cell_size = self.world_size / self.grid_size
         self.comm_radius_world = self.comm_radius * self.cell_size
-        self.obs_dim = swarm_obs_dim(self.local_k, self.max_neighbors, self.message_dim)
+        self.obs_dim = swarm_obs_dim(
+            self.local_k, self.max_neighbors, self.message_dim, self.global_map_cells
+        )
 
         world = World(
             batch_dim,
@@ -194,6 +198,18 @@ class SwarmExplorationScenario(BaseScenario):
                 patch[:, i, j] = (self.explored[batch_idx, gx, gy] > 0).float()
         return patch.reshape(self.world.batch_dim, -1)
 
+    def _downsampled_explored(self, factor: int) -> torch.Tensor:
+        """Coarse (factor x factor) fraction-explored map, flattened per env."""
+        block = self.grid_size // factor
+        down = torch.zeros(self.world.batch_dim, factor * factor, device=self.world.device)
+        for i in range(factor):
+            for j in range(factor):
+                region = self.explored[
+                    :, i * block : (i + 1) * block, j * block : (j + 1) * block
+                ]
+                down[:, i * factor + j] = (region > 0).float().mean(dim=(-1, -2))
+        return down
+
     def observation(self, agent: Agent):
         agent_index = self.world.agents.index(agent)
         pos = agent.state.pos
@@ -206,7 +222,10 @@ class SwarmExplorationScenario(BaseScenario):
         local = self._local_patch(agent)
         rel = self.neighbor_rel_pos[:, agent_index].reshape(self.world.batch_dim, -1)
         msgs = self.incoming_messages[:, agent_index].reshape(self.world.batch_dim, -1)
-        return torch.cat([norm_pos, norm_vel, local, rel, msgs], dim=-1)
+        parts = [norm_pos, norm_vel, local, rel, msgs]
+        if self.global_map_cells > 0:
+            parts.append(self._downsampled_explored(self.global_map_downsample))
+        return torch.cat(parts, dim=-1)
 
     def reward(self, agent: Agent):
         r = self.reward_cfg
@@ -228,21 +247,12 @@ class SwarmExplorationScenario(BaseScenario):
 
     def build_global_state(self) -> torch.Tensor:
         factor = self.cfg["critic"]["grid_downsample"]
-        block = self.grid_size // factor
         parts = []
         for agent in self.world.agents:
             parts.append(agent.state.pos[:, :2])
             parts.append(agent.state.vel[:, :2])
         agent_state = torch.cat(parts, dim=-1)
-
-        down = torch.zeros(self.world.batch_dim, factor * factor, device=self.world.device)
-        for i in range(factor):
-            for j in range(factor):
-                region = self.explored[
-                    :, i * block : (i + 1) * block, j * block : (j + 1) * block
-                ]
-                idx = i * factor + j
-                down[:, idx] = (region > 0).float().mean(dim=(-1, -2))
+        down = self._downsampled_explored(factor)
         return torch.cat([agent_state, down], dim=-1)
 
     def get_grid_numpy(self, env_index: int = 0):

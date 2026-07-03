@@ -52,6 +52,7 @@ env:
   episode_horizon: 500
   coverage_target: 0.85
   world_size: 1.0
+  global_map_downsample: 8   # actor sees a DxD coarse coverage map (0 disables). See STORYLINE Exp 3.
 
 reward:
   alpha: 1.0

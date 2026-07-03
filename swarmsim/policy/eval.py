@@ -18,7 +18,10 @@ from swarmsim.sim.state import build_sim_state
 def load_policy(weights_path: Path, cfg: dict, device: torch.device):
     comm_cfg = cfg["comm"]
     env_cfg = cfg["env"]
-    obs_dim = swarm_obs_dim(env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"])
+    global_map_cells = (env_cfg.get("global_map_downsample", 0) or 0) ** 2
+    obs_dim = swarm_obs_dim(
+        env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], global_map_cells
+    )
     global_dim = swarm_global_dim(env_cfg["num_agents"], cfg["critic"]["grid_downsample"])
 
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)

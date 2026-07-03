@@ -120,8 +120,8 @@ class CentralizedCritic(nn.Module):
         return self.net(global_state).squeeze(-1)
 
 
-def swarm_obs_dim(local_k: int, max_neighbors: int, message_dim: int) -> int:
-    return 4 + local_k * local_k + max_neighbors * (2 + message_dim)
+def swarm_obs_dim(local_k: int, max_neighbors: int, message_dim: int, global_map_cells: int = 0) -> int:
+    return 4 + local_k * local_k + max_neighbors * (2 + message_dim) + global_map_cells
 
 
 def swarm_global_dim(num_agents: int, grid_downsample: int) -> int:

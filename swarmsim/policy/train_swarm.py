@@ -50,7 +50,10 @@ def train(
     env, action_dim = make_swarm_env(cfg, num_envs=num_envs, device=str(device))
     scenario = env.scenario
     num_agents = env_cfg["num_agents"]
-    obs_dim = swarm_obs_dim(env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"])
+    global_map_cells = (env_cfg.get("global_map_downsample", 0) or 0) ** 2
+    obs_dim = swarm_obs_dim(
+        env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], global_map_cells
+    )
     global_dim = swarm_global_dim(num_agents, cfg["critic"]["grid_downsample"])
 
     actor_log_std = cfg.get("policy", {}).get("init_log_std", 0.0)
