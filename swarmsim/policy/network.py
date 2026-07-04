@@ -52,7 +52,12 @@ class ActorCritic(nn.Module):
 
 
 class SwarmActor(nn.Module):
-    """Shared actor with movement + message heads for Stage 2."""
+    """Shared actor with movement + message heads for Stage 2.
+
+    Optionally recurrent (GRU): when use_gru is True, the actor carries a hidden
+    state across timesteps within an episode so a deterministic policy can
+    condition on history (where it has been), not just the current observation.
+    """
 
     def __init__(
         self,
@@ -61,46 +66,72 @@ class SwarmActor(nn.Module):
         hidden: int = 256,
         comm_mode: str = "full",
         init_log_std: float = 0.0,
+        use_gru: bool = False,
+        gru_hidden: int = 128,
     ):
         super().__init__()
         self.comm_mode = comm_mode
         self.message_dim = message_dim
+        self.use_gru = use_gru
+        self.gru_hidden = gru_hidden if use_gru else 0
         self.body = mlp([obs_dim, hidden, hidden])
-        self.movement_head = nn.Linear(hidden, 2)
-        self.message_head = nn.Linear(hidden, message_dim) if comm_mode != "none" else None
+        self.gru = nn.GRUCell(hidden, gru_hidden) if use_gru else None
+        head_in = gru_hidden if use_gru else hidden
+        self.movement_head = nn.Linear(head_in, 2)
+        self.message_head = nn.Linear(head_in, message_dim) if comm_mode != "none" else None
         self.log_std = nn.Parameter(torch.full((2,), float(init_log_std)))
 
-    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def initial_hidden(self, batch_size: int, device: torch.device) -> torch.Tensor | None:
+        if not self.use_gru:
+            return None
+        return torch.zeros(batch_size, self.gru_hidden, device=device)
+
+    def forward(
+        self, obs: torch.Tensor, hidden: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         obs = torch.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
-        hidden = self.body(obs)
-        movement = torch.tanh(self.movement_head(hidden))
+        feat = self.body(obs)
+        if self.use_gru:
+            if hidden is None:
+                hidden = torch.zeros(obs.shape[0], self.gru_hidden, device=obs.device)
+            hidden = torch.nan_to_num(hidden, nan=0.0, posinf=1.0, neginf=-1.0)
+            new_hidden = self.gru(feat, hidden)
+            head_in = new_hidden
+        else:
+            new_hidden = None
+            head_in = feat
+        movement = torch.tanh(self.movement_head(head_in))
         if self.message_head is None:
-            return movement, None
-        message = torch.tanh(self.message_head(hidden))
-        return movement, message
+            return movement, None, new_hidden
+        message = torch.tanh(self.message_head(head_in))
+        return movement, message, new_hidden
 
-    def act_deterministic(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def act_deterministic(
+        self, obs: torch.Tensor, hidden: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """Mean action for inference / demo (no sampling noise)."""
-        return self.forward(obs)
+        return self.forward(obs, hidden)
 
-    def _movement_std(self, movement: torch.Tensor) -> torch.Tensor:
+    def _movement_std(self, movement: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         movement = torch.nan_to_num(movement, nan=0.0, posinf=1.0, neginf=-1.0)
         std = self.log_std.clamp(-5.0, 2.0).exp().expand_as(movement)
         return movement, std
 
-    def act(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
-        movement, message = self.forward(obs)
+    def act(
+        self, obs: torch.Tensor, hidden: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        movement, message, new_hidden = self.forward(obs, hidden)
         movement, std = self._movement_std(movement)
         dist = Normal(movement, std)
         action_move = dist.sample()
         action_move = torch.clamp(action_move, -1.0, 1.0)
         log_prob = dist.log_prob(action_move).sum(-1)
-        return action_move, message, log_prob, movement
+        return action_move, message, log_prob, movement, new_hidden
 
     def evaluate(
-        self, obs: torch.Tensor, action_move: torch.Tensor
+        self, obs: torch.Tensor, action_move: torch.Tensor, hidden: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        movement, message = self.forward(obs)
+        movement, message, _ = self.forward(obs, hidden)
         movement, std = self._movement_std(movement)
         dist = Normal(movement, std)
         log_prob = dist.log_prob(action_move).sum(-1)

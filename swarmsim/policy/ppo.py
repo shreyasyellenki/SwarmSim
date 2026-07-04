@@ -91,10 +91,11 @@ class RolloutBuffer:
 class SwarmRolloutBuffer:
   """Rollout buffer for multi-agent VMAS training (flattened agent steps)."""
 
-  def __init__(self, size: int, obs_dim: int, action_dim: int, device: torch.device):
+  def __init__(self, size: int, obs_dim: int, action_dim: int, device: torch.device, hidden_dim: int = 0):
       self.size = size
       self.device = device
       self.ptr = 0
+      self.hidden_dim = hidden_dim
       self.obs = torch.zeros((size, obs_dim), device=device)
       self.global_states = torch.zeros((size, 1), device=device)  # resized on first add
       self.actions = torch.zeros((size, action_dim), device=device)
@@ -104,9 +105,10 @@ class SwarmRolloutBuffer:
       self.log_probs = torch.zeros(size, device=device)
       self.advantages = torch.zeros(size, device=device)
       self.returns = torch.zeros(size, device=device)
+      self.hidden_in = torch.zeros((size, hidden_dim), device=device) if hidden_dim > 0 else None
       self._global_dim: int | None = None
 
-  def add(self, obs, global_state, action, reward, done, value, log_prob):
+  def add(self, obs, global_state, action, reward, done, value, log_prob, hidden_in=None):
       if self._global_dim is None:
           self._global_dim = global_state.shape[-1]
           self.global_states = torch.zeros((self.size, self._global_dim), device=self.device)
@@ -118,6 +120,8 @@ class SwarmRolloutBuffer:
       self.dones[i] = done
       self.values[i] = value
       self.log_probs[i] = log_prob
+      if self.hidden_in is not None and hidden_in is not None:
+          self.hidden_in[i] = hidden_in
       self.ptr += 1
 
   def full(self) -> bool:
@@ -239,8 +243,9 @@ class SwarmPPOTrainer:
                 mb_old_logp = old_log_probs[mb]
                 mb_adv = advantages[mb]
                 mb_returns = returns[mb]
+                mb_hidden = buffer.hidden_in[mb] if buffer.hidden_in is not None else None
 
-                log_prob, entropy, _ = self.actor.evaluate(mb_obs, mb_actions)
+                log_prob, entropy, _ = self.actor.evaluate(mb_obs, mb_actions, mb_hidden)
                 values = self.critic(mb_global)
                 if not torch.isfinite(log_prob).all() or not torch.isfinite(values).all():
                     continue

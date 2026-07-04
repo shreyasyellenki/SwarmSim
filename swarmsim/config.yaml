@@ -61,6 +61,8 @@ reward:
 
 policy:
   init_log_std: 0.0   # initial log std of movement Gaussian (std=exp(this)); lower = less action noise
+  use_gru: false      # recurrent actor: carry hidden state across steps (memory). See STORYLINE Exp 5.
+  gru_hidden: 128     # GRU hidden size when use_gru is true
   std_schedule:
     enabled: false
     start_log_std: 0.0    # std=1.0 early (explore)

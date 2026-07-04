@@ -26,11 +26,15 @@ def collect_message_data(cfg: dict, weights_path: Path, num_episodes: int = 10) 
 
     for ep in range(num_episodes):
         obs_list = env.reset(seed=ep)
+        hidden_states = [actor.initial_hidden(1, device) for _ in range(cfg["env"]["num_agents"])]
         for step in range(cfg["env"]["episode_horizon"]):
             actions = []
             with torch.no_grad():
                 for agent_idx in range(cfg["env"]["num_agents"]):
-                    move, message, _, _ = actor.act(obs_list[agent_idx].to(device))
+                    move, message, _, _, h_out = actor.act(
+                        obs_list[agent_idx].to(device), hidden_states[agent_idx]
+                    )
+                    hidden_states[agent_idx] = h_out
                     if message is None:
                         actions.append(move)
                     else:

@@ -31,18 +31,22 @@ class SwarmSimulator:
         self.actor.eval()
         self.obs = self.env.reset()
         self.step_count = 0
+        self.num_agents = cfg["env"]["num_agents"]
+        self.hidden_states = [self.actor.initial_hidden(1, self.device) for _ in range(self.num_agents)]
 
     def step_once(self) -> dict:
-        num_agents = self.cfg["env"]["num_agents"]
+        num_agents = self.num_agents
         actions = []
         deterministic = self.demo_cfg.get("deterministic", True)
         with torch.no_grad():
             for agent_idx in range(num_agents):
                 agent_obs = self.obs[agent_idx].to(self.device)
+                h_in = self.hidden_states[agent_idx]
                 if deterministic:
-                    move, message = self.actor.act_deterministic(agent_obs)
+                    move, message, h_out = self.actor.act_deterministic(agent_obs, h_in)
                 else:
-                    move, message, _, _ = self.actor.act(agent_obs)
+                    move, message, _, _, h_out = self.actor.act(agent_obs, h_in)
+                self.hidden_states[agent_idx] = h_out
                 if message is None:
                     actions.append(move)
                 else:
@@ -58,6 +62,9 @@ class SwarmSimulator:
         if done or self.step_count >= self.cfg["env"]["episode_horizon"]:
             self.obs = self.env.reset()
             self.step_count = 0
+            self.hidden_states = [
+                self.actor.initial_hidden(1, self.device) for _ in range(num_agents)
+            ]
 
         return self._build_state()
 

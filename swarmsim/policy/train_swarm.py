@@ -73,6 +73,7 @@ def train(
     init_log_std: float | None = None,
     std_anneal: bool = False,
     entropy_anneal: bool = False,
+    use_gru: bool | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
@@ -80,6 +81,8 @@ def train(
     if init_log_std is not None:
         cfg.setdefault("policy", {})["init_log_std"] = init_log_std
     policy_cfg = cfg.setdefault("policy", {})
+    if use_gru is not None:
+        policy_cfg["use_gru"] = use_gru
     if std_anneal:
         policy_cfg.setdefault("std_schedule", {})["enabled"] = True
     if entropy_anneal:
@@ -105,15 +108,25 @@ def train(
     global_dim = swarm_global_dim(num_agents, cfg["critic"]["grid_downsample"])
 
     actor_log_std = cfg.get("policy", {}).get("init_log_std", 0.0)
+    use_gru_flag = bool(policy_cfg.get("use_gru", False))
+    gru_hidden = int(policy_cfg.get("gru_hidden", 128))
     actor = SwarmActor(
-        obs_dim, comm_cfg["message_dim"], comm_mode=comm_cfg["mode"], init_log_std=actor_log_std
+        obs_dim,
+        comm_cfg["message_dim"],
+        comm_mode=comm_cfg["mode"],
+        init_log_std=actor_log_std,
+        use_gru=use_gru_flag,
+        gru_hidden=gru_hidden,
     ).to(device)
     critic = CentralizedCritic(global_dim).to(device)
     std_schedule_on = policy_cfg.get("std_schedule", {}).get("enabled", False)
     trainer = SwarmPPOTrainer(actor, critic, ppo_cfg, device, train_log_std=not std_schedule_on)
 
     steps_per_rollout = ppo_cfg.rollout_steps
-    buffer = SwarmRolloutBuffer(steps_per_rollout * num_agents * num_envs, obs_dim, action_dim, device)
+    hidden_dim = actor.gru_hidden
+    buffer = SwarmRolloutBuffer(
+        steps_per_rollout * num_agents * num_envs, obs_dim, action_dim, device, hidden_dim=hidden_dim
+    )
 
     weights_dir = Path(__file__).resolve().parents[2] / train_cfg["weights_dir"]
     weights_dir.mkdir(parents=True, exist_ok=True)
@@ -139,8 +152,12 @@ def train(
             "comm_mode": comm_mode,
             "revisit_gamma": cfg["reward"]["gamma"],
             "init_log_std": cfg.get("policy", {}).get("init_log_std", 0.0),
+            "use_gru": use_gru_flag,
+            "gru_hidden": gru_hidden,
         }
         return ckpt
+
+    hidden_states = [actor.initial_hidden(num_envs, device) for _ in range(num_agents)]
 
     while global_step < total_timesteps:
         schedule_vals = apply_training_schedules(actor, trainer, cfg, global_step, total_timesteps)
@@ -151,9 +168,11 @@ def train(
 
             for agent_idx in range(num_agents):
                 agent_obs = torch.nan_to_num(obs[agent_idx].to(device), nan=0.0, posinf=1.0, neginf=-1.0)
+                h_in = hidden_states[agent_idx]
                 with torch.no_grad():
-                    move, message, log_prob, _ = actor.act(agent_obs)
+                    move, message, log_prob, _, h_out = actor.act(agent_obs, h_in)
                     value = critic(global_state)
+                hidden_states[agent_idx] = h_out
 
                 if comm_cfg["mode"] == "none" or message is None:
                     full_action = move
@@ -161,7 +180,7 @@ def train(
                     full_action = torch.cat([move, message], dim=-1)
 
                 actions_to_env.append(full_action)
-                step_records.append((agent_obs, global_state, full_action, log_prob, value))
+                step_records.append((agent_obs, global_state, full_action, log_prob, value, h_in))
 
             next_obs, rews, dones, _ = env.step(actions_to_env)
 
@@ -170,7 +189,7 @@ def train(
             if done_flag.ndim > 1:
                 done_flag = done_flag.any(dim=-1)
 
-            for agent_obs, gs, action, log_prob, value in step_records:
+            for agent_obs, gs, action, log_prob, value, h_in in step_records:
                 for env_i in range(num_envs):
                     buffer.add(
                         agent_obs[env_i],
@@ -180,7 +199,12 @@ def train(
                         done_flag[env_i].float(),
                         value[env_i],
                         log_prob[env_i],
+                        hidden_in=h_in[env_i] if h_in is not None else None,
                     )
+
+            if actor.use_gru and done_flag.any():
+                for agent_idx in range(num_agents):
+                    hidden_states[agent_idx][done_flag] = 0.0
 
             global_step += num_envs
             episode_returns += team_reward
@@ -284,6 +308,7 @@ if __name__ == "__main__":
     parser.add_argument("--init-log-std", type=float, default=None, help="Initial log std of movement Gaussian")
     parser.add_argument("--std-anneal", action="store_true", help="Linearly anneal log_std per policy.std_schedule")
     parser.add_argument("--entropy-anneal", action="store_true", help="Linearly decay entropy_coef per policy.entropy_schedule")
+    parser.add_argument("--use-gru", action="store_true", help="Use a recurrent (GRU) actor with per-episode hidden state")
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -295,4 +320,5 @@ if __name__ == "__main__":
         init_log_std=args.init_log_std,
         std_anneal=args.std_anneal,
         entropy_anneal=args.entropy_anneal,
+        use_gru=True if args.use_gru else None,
     )

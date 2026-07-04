@@ -18,6 +18,7 @@ from swarmsim.sim.state import build_sim_state
 def load_policy(weights_path: Path, cfg: dict, device: torch.device):
     comm_cfg = cfg["comm"]
     env_cfg = cfg["env"]
+    policy_cfg = cfg.get("policy", {})
     global_map_cells = (env_cfg.get("global_map_downsample", 0) or 0) ** 2
     obs_dim = swarm_obs_dim(
         env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], global_map_cells
@@ -26,8 +27,16 @@ def load_policy(weights_path: Path, cfg: dict, device: torch.device):
 
     checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
     comm_mode = checkpoint.get("comm_mode", comm_cfg.get("mode", "full"))
+    use_gru = checkpoint.get("use_gru", policy_cfg.get("use_gru", False))
+    gru_hidden = checkpoint.get("gru_hidden", policy_cfg.get("gru_hidden", 128))
 
-    actor = SwarmActor(obs_dim, comm_cfg["message_dim"], comm_mode=comm_mode).to(device)
+    actor = SwarmActor(
+        obs_dim,
+        comm_cfg["message_dim"],
+        comm_mode=comm_mode,
+        use_gru=use_gru,
+        gru_hidden=gru_hidden,
+    ).to(device)
     actor.load_state_dict(checkpoint["actor"])
     actor.eval()
     return actor, comm_mode
@@ -51,15 +60,18 @@ def run_episode(
     time_to_threshold = max_steps
 
     trajectory = []
+    hidden_states = [actor.initial_hidden(1, device) for _ in range(num_agents)]
     while step < max_steps:
         actions = []
         with torch.no_grad():
             for agent_idx in range(num_agents):
                 agent_obs = obs[agent_idx].to(device)
+                h_in = hidden_states[agent_idx]
                 if deterministic:
-                    move, message = actor.act_deterministic(agent_obs)
+                    move, message, h_out = actor.act_deterministic(agent_obs, h_in)
                 else:
-                    move, message, _, _ = actor.act(agent_obs)
+                    move, message, _, _, h_out = actor.act(agent_obs, h_in)
+                hidden_states[agent_idx] = h_out
                 if message is None:
                     actions.append(move)
                 else:
