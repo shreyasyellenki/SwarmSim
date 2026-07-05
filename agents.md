@@ -161,7 +161,7 @@ Each agent's observation = `[norm_pos(2), norm_vel(2), local_5x5(25), neighbor_r
 - **Learned log_std without anneal:** policies end at **~+2.0 (std≈7.4)** — noise grows; see Exp 4.
 - **Exp 4 std anneal:** `--std-anneal --entropy-anneal` → final std≈0.20, deterministic coverage **13.2%** (vs 14.9% no anneal) — diagnostic confirmed, eval gain did not materialize at 300k.
 - **Exp 5 GRU actor:** `--use-gru` → deterministic coverage **19.5%** (best so far). Weights: `swarm_policy_full_gru.pt`.
-- **Overnight Exp 6+7:** `bash scripts/run_overnight_exp67.sh` — GRU+anneal @ 1M (Exp 6), then GRU+anneal+spread reward @ 1M (Exp 7). Results: `weights/overnight_exp67_results.json`.
+- **Overnight Exp 6+7:** `bash scripts/run_overnight_exp67.sh` — 1M steps each, no crash. Results: Exp 6 **13.5%**, Exp 7 **14.7%** (below Exp 5 GRU **19.5%** @ 300k). Best weights for demo/eval: `swarm_policy_full_gru.pt`.
 - Ablation (none/null/full) at 300k, γ=0.01: 18.3% / 13.1% / 13.0% — comm did **not** help on open grid.
 - **Exp 3 global map in actor obs** (300k, γ=0.3): **12.8%** deterministic coverage vs **14.9%** without map — did not fix corner-clustering hypothesis at this budget.
 - Runs use **300k steps** (1M crashes ~470k on reward saturation → advantage collapse → NaN; guards added in ppo.py/train_swarm.py).
