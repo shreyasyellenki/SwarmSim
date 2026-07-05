@@ -74,10 +74,13 @@ def train(
     std_anneal: bool = False,
     entropy_anneal: bool = False,
     use_gru: bool | None = None,
+    reward_mode: str | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
         cfg["reward"]["gamma"] = revisit_gamma
+    if reward_mode is not None:
+        cfg["reward"]["mode"] = reward_mode
     if init_log_std is not None:
         cfg.setdefault("policy", {})["init_log_std"] = init_log_std
     policy_cfg = cfg.setdefault("policy", {})
@@ -154,6 +157,7 @@ def train(
             "init_log_std": cfg.get("policy", {}).get("init_log_std", 0.0),
             "use_gru": use_gru_flag,
             "gru_hidden": gru_hidden,
+            "reward_mode": cfg["reward"].get("mode", "team_new_cells"),
         }
         return ckpt
 
@@ -309,6 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("--std-anneal", action="store_true", help="Linearly anneal log_std per policy.std_schedule")
     parser.add_argument("--entropy-anneal", action="store_true", help="Linearly decay entropy_coef per policy.entropy_schedule")
     parser.add_argument("--use-gru", action="store_true", help="Use a recurrent (GRU) actor with per-episode hidden state")
+    parser.add_argument("--reward-mode", choices=["team_new_cells", "spread"], default=None)
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -321,4 +326,5 @@ if __name__ == "__main__":
         std_anneal=args.std_anneal,
         entropy_anneal=args.entropy_anneal,
         use_gru=True if args.use_gru else None,
+        reward_mode=args.reward_mode,
     )

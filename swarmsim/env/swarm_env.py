@@ -93,7 +93,9 @@ class SwarmExplorationScenario(BaseScenario):
             batch_dim, self.num_agents, self.message_dim, device=device
         )
         self.new_cells = torch.zeros(batch_dim, device=device)
+        self.agent_new_cells = torch.zeros(batch_dim, self.num_agents, device=device)
         self.coverage = torch.zeros(batch_dim, device=device)
+        self.coverage_delta = torch.zeros(batch_dim, device=device)
         self._step_count = torch.zeros(batch_dim, device=device, dtype=torch.int32)
 
         return world
@@ -122,7 +124,9 @@ class SwarmExplorationScenario(BaseScenario):
         self.neighbor_rel_pos[env_index].zero_()
         self.outgoing_messages[env_index].zero_()
         self.new_cells[env_index] = 0.0
+        self.agent_new_cells[env_index].zero_()
         self.coverage[env_index] = 0.0
+        self.coverage_delta[env_index] = 0.0
         self._step_count[env_index] = 0
         self._mark_all_agents(env_index)
         self._update_communication_for_env(env_index)
@@ -131,6 +135,8 @@ class SwarmExplorationScenario(BaseScenario):
         indices = [env_index] if env_index is not None else list(range(self.world.batch_dim))
         for idx in indices:
             new_count = 0
+            if env_index is None or idx == env_index:
+                self.agent_new_cells[idx].zero_()
             for agent_id, agent in enumerate(self.world.agents):
                 cx, cy = self._world_to_cell(agent.state.pos)
                 cx_i, cy_i = cx[idx].item(), cy[idx].item()
@@ -138,6 +144,7 @@ class SwarmExplorationScenario(BaseScenario):
                 if self.explored[idx, cx_i, cy_i] == 0:
                     self.explored[idx, cx_i, cy_i] = agent_id + 1
                     new_count += 1
+                    self.agent_new_cells[idx, agent_id] += 1.0
             self.new_cells[idx] = float(new_count)
             explored_cells = (self.explored[idx] > 0).sum().float()
             self.coverage[idx] = explored_cells / float(self.grid_size * self.grid_size)
@@ -180,8 +187,10 @@ class SwarmExplorationScenario(BaseScenario):
             self.incoming_messages[:, receiver_id] = padded_msg
 
     def post_step(self):
+        prev_coverage = self.coverage.clone()
         self._step_count += 1
         self._mark_all_agents()
+        self.coverage_delta = self.coverage - prev_coverage
         self._update_communication_for_env()
 
     def _local_patch(self, agent: Agent) -> torch.Tensor:
@@ -229,11 +238,18 @@ class SwarmExplorationScenario(BaseScenario):
 
     def reward(self, agent: Agent):
         r = self.reward_cfg
-        team_reward = r["alpha"] * self.new_cells
+        agent_index = self.world.agents.index(agent)
         cx, cy = self._world_to_cell(agent.state.pos)
         batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
         revisit = (self.visit_count[batch_idx, cx, cy] > 1).float()
-        return team_reward - r["gamma"] * revisit
+
+        mode = r.get("mode", "team_new_cells")
+        if mode == "spread":
+            personal = self.agent_new_cells[:, agent_index]
+            team_progress = self.coverage_delta * float(self.grid_size * self.grid_size)
+            return r["alpha"] * personal + r["beta"] * team_progress - r["gamma"] * revisit
+
+        return r["alpha"] * self.new_cells - r["gamma"] * revisit
 
     def done(self):
         return self.coverage >= self.coverage_target

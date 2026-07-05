@@ -55,9 +55,10 @@ env:
   global_map_downsample: 8   # actor sees a DxD coarse coverage map (0 disables). See STORYLINE Exp 3.
 
 reward:
-  alpha: 1.0
-  beta: 0.1
-  gamma: 0.3          # revisit penalty (bumped from 0.01 after gamma sweep; see STORYLINE.md)
+  alpha: 1.0          # personal new-cell credit (spread mode) or team new cells (default)
+  beta: 0.25          # team coverage-progress bonus (spread mode only)
+  gamma: 0.3          # revisit penalty
+  mode: team_new_cells  # team_new_cells | spread
 
 policy:
   init_log_std: 0.0   # initial log std of movement Gaussian (std=exp(this)); lower = less action noise
