@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Experiment 5: recurrent (GRU) actor with per-episode hidden state, so a
-# deterministic policy can condition on history (where it's been), not just the
-# current obs. Isolates GRU as the single variable vs the global-map run (12.8%):
-# both have gamma=0.3 + global map ON; this adds GRU. See STORYLINE.md.
+# Experiment 5: GRU actor. See STORYLINE.md for results.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

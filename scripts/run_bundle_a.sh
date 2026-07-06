@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Bundle A: local-only obs + count-based curiosity + inter-agent repulsion.
-# GRU actor, no anneal, 500k steps. Success gate: >40% deterministic coverage.
+# Bundle A: curiosity + repulsion, local obs, GRU, 500k steps, no anneal.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

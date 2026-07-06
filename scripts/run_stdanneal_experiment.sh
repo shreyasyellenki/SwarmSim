@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Experiment 4: training-pressure fix — anneal log_std (1.0 -> 0.2) and decay entropy.
-# Holds gamma=0.3 and global map ON. Compare vs gamma03 baseline (14.9%). See STORYLINE.md.
+# Holds gamma=0.3 and global map ON. See STORYLINE.md for results.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

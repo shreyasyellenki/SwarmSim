@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Experiment 3 (Path A): give the actor a coarse global coverage map (8x8) in its
-# observation, holding gamma=0.3. Train full-comm at 300k, then deterministic eval.
-# Compare against gamma=0.3 baseline (14.9% coverage, local-obs only). See STORYLINE.md.
+# Experiment 3 (Path A): coarse global coverage map (8x8) in actor obs, gamma=0.3.
+# Train full-comm at 300k, then deterministic eval. See STORYLINE.md for results.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

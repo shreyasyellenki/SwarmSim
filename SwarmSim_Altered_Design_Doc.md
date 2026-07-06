@@ -387,7 +387,7 @@ VMAS is built on TorchRL's batched tensor API — SB3 doesn't support it nativel
 In cooperative MARL, each agent's individual actions only partially explain the team's reward. A centralized critic that sees the global state during training gives much better value estimates, which makes the policy gradient more accurate. At deployment the critic is thrown away — only the actor runs, using only local observations.
 
 **"What's the key result?"**
-I ran three ablations: no communication, null messages (head exists but ignored), and full communication. Full comm achieves 90% coverage X% faster than no-comm, and beats null-messages by Y% — which means agents learned something useful to say, not just that a bigger model helps.
+Run three ablations: no communication, null messages (head exists but ignored), and full communication. Compare the eval metric (time-to-coverage-threshold and mean final coverage) across conditions with the same seeds and episode count. If full comm beats null, agents learned something useful to say — not just that a bigger model helps. Report numbers in your write-up; keep raw experiment JSON local, not in the public README.
 
 ---
 

@@ -58,11 +58,11 @@ reward:
   alpha: 1.0          # personal new-cell credit (spread mode) or team new cells (default)
   beta: 0.25          # team coverage-progress bonus (spread mode only)
   gamma: 0.3          # revisit penalty
-  delta: 0.0          # count-based exploration bonus (0 disables). Bundle A: 0.3
-  frontier: 0.0       # bonus for unexplored cells in local window (0 disables). Bundle F: 0.2
-  diversity: 0.0      # heading-alignment penalty vs neighbors in comm range. Bundle G: 0.1
-  repulsion: 0.0      # proximity penalty weight (0 disables). Bundle A: 0.05
-  message_heading_aux: 0.0  # supervised msg[:2] ≈ velocity heading (Bundle H: 0.05)
+  delta: 0.0          # count-based exploration bonus (0 disables)
+  frontier: 0.0       # bonus for unexplored cells in local window (0 disables)
+  diversity: 0.0      # heading-alignment penalty vs neighbors in comm range
+  repulsion: 0.0      # proximity penalty weight (0 disables)
+  message_heading_aux: 0.0  # supervised msg[:2] ≈ velocity heading (0 disables)
   repulsion_radius: 3 # grid cells; penalty when another agent is closer than this
   mode: team_new_cells  # team_new_cells | spread
 

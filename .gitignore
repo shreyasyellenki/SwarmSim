@@ -218,10 +218,13 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# SwarmSim artifacts
+# SwarmSim artifacts (local experiment outputs — not published)
 runs/
 analysis_output/
 weights/*.pt
+weights/*_experiment_results.json
+weights/*_ablation_results.json
+weights/bundle_*_comm_analysis/
 !weights/.gitkeep
 logs/
 STORYLINE.md

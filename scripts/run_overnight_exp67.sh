@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Overnight Experiments 6 + 7 — push deterministic coverage toward resume-worthy numbers.
+# Overnight Experiments 6 + 7. See STORYLINE.md for results.
 #
 # Exp 6: GRU + global map + gamma=0.3 + std/entropy anneal @ 1M steps
 # Exp 7: same stack + spread reward (per-agent discovery credit) + gamma=0.5 @ 1M steps
