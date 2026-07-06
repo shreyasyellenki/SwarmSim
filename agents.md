@@ -73,6 +73,23 @@ All hyperparameters: [`swarmsim/config.yaml`](swarmsim/config.yaml)
 - [x] Demo server: checkpoint-aware obs dim + `SWARMSIM_WEIGHTS` / `demo.weights` in config
 - [x] Experiment scripts: `run_bundle_a.sh` … `run_bundle_f.sh`
 
+### After each bundle run (required)
+
+When a bundle train+eval finishes (or is stopped with partial results worth recording), **commit and push to `main`** before starting the next bundle. Do not leave experiment code/results only on disk.
+
+1. Update **`agents.md`** — experiment table, best coverage, `demo.weights` if new best.
+2. Update **`STORYLINE.md`** (local, gitignored) — hypothesis, result, lesson learned.
+3. Stage and commit: result JSON (`weights/bundle_*_experiment_results.json`), any new/changed scripts, env/train/eval code, `agents.md`. Do **not** commit `.pt` weights (gitignored).
+4. Push: `git push origin main`
+
+```bash
+git add agents.md scripts/run_bundle_*.sh weights/bundle_*_experiment_results.json swarmsim/
+git commit -m "Bundle X: <one-line result, e.g. 35.9% det coverage with frontier reward>"
+git push origin main
+```
+
+Cursor agents: treat this checklist as mandatory at the end of every bundle run unless the user explicitly says not to commit.
+
 ### Best eval result (deterministic, 50 seeds × 20 episodes)
 - **Bundle F** (`swarm_policy_full_bundle_f.pt`): **35.9%** mean final coverage
 - Prior best: Bundle A 21.9%, Exp 5 GRU 19.5%
