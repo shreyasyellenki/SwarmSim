@@ -180,7 +180,8 @@ Stage 1 MuJoCo is a separate track; weights do not transfer.
 ## Reward (default `team_new_cells`)
 
 ```
-reward = alpha * new_cells - gamma * revisit + delta * curiosity + frontier * frontier_frac - repulsion * proximity
+reward = alpha * new_cells - gamma * revisit + delta * curiosity + frontier * frontier_frac
+         - repulsion * proximity - diversity * heading_alignment
 ```
 
 | Key | Default | Bundle F |
@@ -190,6 +191,7 @@ reward = alpha * new_cells - gamma * revisit + delta * curiosity + frontier * fr
 | `delta` (`--curiosity`) | 0 | **0.3** count-based exploration bonus |
 | `frontier` (`--frontier`) | 0 | **0.2** unexplored fraction in 5×5 window |
 | `repulsion` (`--repulsion`) | 0 | **0.05** when agents within 3 cells |
+| `diversity` (`--diversity`) | 0 | **0.1** heading-alignment penalty (Bundle G; regressed vs F) |
 
 Team rewards are averaged across agents in `train_swarm.py` for PPO.
 
@@ -208,7 +210,7 @@ Team rewards are averaged across agents in `train_swarm.py` for PPO.
 | **Bundle A** (curiosity + repulsion, GRU 500k) | **21.9%** | repulsion fixes corner clustering |
 | Bundle D (anneal @ 150k, std 0.7, 250k) | 13.1% det ≈ stoch | gap closed, bad mean committed |
 | **Bundle F** (frontier 0.2, 250k) | **35.9%** | **current best / demo default** |
-| Bundle G (+ diversity 0.1) | 21.6% | diversity hurt vs F; comm ablation: full > null > none |
+| Bundle G (+ diversity 0.1) | 21.6% | regressed vs F; **comm ablation: full 21.6% > null 12.9% > none 12.7%** |
 
 **Train/eval gap diagnosis:** stochastic train coverage → ~100% while deterministic eval ~22% (Bundle A) because mean policy draws thin diagonal streaks; noise accidentally fills gaps. Frontier reward addresses sweeping behavior.
 
@@ -220,6 +222,8 @@ Team rewards are averaged across agents in `train_swarm.py` for PPO.
 - **Exp 5 GRU:** `--use-gru` → **19.5%**.
 - **Bundle A:** `--no-global-map --curiosity 0.3 --repulsion 0.05 --use-gru` @ 500k → **21.9%**.
 - **Bundle F:** + `--frontier 0.2` @ 250k → **35.9%** (demo default).
+- **Bundle G:** + `--diversity 0.1` @ 250k → **21.6%** (hurt vs F); comm wins +8.7pp at same config.
+- **Bundle H:** `--message-heading-aux 0.05` implemented (`run_bundle_h.sh`); not run — revisit after coordination fix.
 - **Std anneal CLI:** `--std-anneal --std-anneal-start N --std-final 0.7` (delayed; don't start during breakthrough ~110k–200k).
 - PPO NaN guards in `ppo.py` / `train_swarm.py` for long runs.
 
@@ -237,6 +241,13 @@ python -m swarmsim.policy.train_swarm --comm-mode full --timesteps 250000 \
 
 # Or use script
 bash scripts/run_bundle_f.sh
+
+# Bundle G (diversity — regressed vs F)
+bash scripts/run_bundle_g.sh
+bash scripts/run_bundle_g_ablation.sh   # null/none + comm_analysis
+
+# Bundle H (G + msg heading aux — not run yet)
+bash scripts/run_bundle_h.sh
 
 # Demo (default: bundle_f weights in config.yaml)
 bash scripts/run_demo.sh
