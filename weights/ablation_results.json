@@ -1,0 +1,26 @@
+{
+  "none": {
+    "metric": "time_to_90pct_coverage",
+    "mean_time_to_threshold": 500.0,
+    "std_time_to_threshold": 0.0,
+    "mean_final_coverage": 0.1827587890625,
+    "num_episodes": 1000,
+    "comm_mode": "none"
+  },
+  "null": {
+    "metric": "time_to_90pct_coverage",
+    "mean_time_to_threshold": 500.0,
+    "std_time_to_threshold": 0.0,
+    "mean_final_coverage": 0.1308095703125,
+    "num_episodes": 1000,
+    "comm_mode": "null"
+  },
+  "full": {
+    "metric": "time_to_90pct_coverage",
+    "mean_time_to_threshold": 500.0,
+    "std_time_to_threshold": 0.0,
+    "mean_final_coverage": 0.1302177734375,
+    "num_episodes": 1000,
+    "comm_mode": "full"
+  }
+}

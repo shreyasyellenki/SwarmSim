@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -15,20 +17,71 @@ from swarmsim.policy.network import CentralizedCritic, SwarmActor, swarm_global_
 from swarmsim.sim.state import build_sim_state
 
 
+def apply_checkpoint_config(cfg: dict, checkpoint: dict) -> dict:
+    """Merge env/reward settings stored in a training checkpoint into cfg."""
+    updated = copy.deepcopy(cfg)
+    if "global_map_downsample" in checkpoint:
+        updated["env"]["global_map_downsample"] = checkpoint["global_map_downsample"]
+    if "curiosity_delta" in checkpoint:
+        updated["reward"]["delta"] = checkpoint["curiosity_delta"]
+    if "frontier" in checkpoint:
+        updated["reward"]["frontier"] = checkpoint["frontier"]
+    if "repulsion" in checkpoint:
+        updated["reward"]["repulsion"] = checkpoint["repulsion"]
+    if "repulsion_radius" in checkpoint:
+        updated["reward"]["repulsion_radius"] = checkpoint["repulsion_radius"]
+    return updated
+
+
+def infer_global_map_downsample(checkpoint: dict, cfg: dict) -> int:
+    """Infer actor global-map downsample from checkpoint weight shapes."""
+    if "global_map_downsample" in checkpoint:
+        return int(checkpoint["global_map_downsample"])
+
+    env_cfg = cfg["env"]
+    comm_cfg = cfg["comm"]
+    obs_dim = int(checkpoint["actor"]["body.0.weight"].shape[1])
+    base_dim = swarm_obs_dim(
+        env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], 0
+    )
+    extra = obs_dim - base_dim
+    if extra == 0:
+        return 0
+    side = int(round(math.sqrt(extra)))
+    if side * side != extra:
+        raise ValueError(
+            f"Cannot infer global_map_downsample from obs_dim={obs_dim} (base={base_dim})"
+        )
+    return side
+
+
+def cfg_for_checkpoint(cfg: dict, checkpoint: dict) -> dict:
+    """Return cfg aligned with checkpoint env/reward layout (incl. legacy weights)."""
+    updated = apply_checkpoint_config(cfg, checkpoint)
+    updated["env"]["global_map_downsample"] = infer_global_map_downsample(checkpoint, cfg)
+    if "use_gru" in checkpoint:
+        updated.setdefault("policy", {})["use_gru"] = checkpoint["use_gru"]
+    if "comm_mode" in checkpoint:
+        updated.setdefault("comm", {})["mode"] = checkpoint["comm_mode"]
+    return updated
+
+
 def load_policy(weights_path: Path, cfg: dict, device: torch.device):
     comm_cfg = cfg["comm"]
     env_cfg = cfg["env"]
     policy_cfg = cfg.get("policy", {})
-    global_map_cells = (env_cfg.get("global_map_downsample", 0) or 0) ** 2
+    checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
+
+    map_downsample = infer_global_map_downsample(checkpoint, cfg)
+    global_map_cells = map_downsample ** 2
+    comm_mode = checkpoint.get("comm_mode", comm_cfg.get("mode", "full"))
+    use_gru = checkpoint.get("use_gru", policy_cfg.get("use_gru", False))
+    gru_hidden = checkpoint.get("gru_hidden", policy_cfg.get("gru_hidden", 128))
+
     obs_dim = swarm_obs_dim(
         env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], global_map_cells
     )
     global_dim = swarm_global_dim(env_cfg["num_agents"], cfg["critic"]["grid_downsample"])
-
-    checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
-    comm_mode = checkpoint.get("comm_mode", comm_cfg.get("mode", "full"))
-    use_gru = checkpoint.get("use_gru", policy_cfg.get("use_gru", False))
-    gru_hidden = checkpoint.get("gru_hidden", policy_cfg.get("gru_hidden", 128))
 
     actor = SwarmActor(
         obs_dim,
@@ -125,6 +178,10 @@ def evaluate(
     cfg = load_config()
     if comm_mode:
         cfg["comm"]["mode"] = comm_mode
+
+    checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
+    cfg = cfg_for_checkpoint(cfg, checkpoint)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env, _ = make_swarm_env(cfg, num_envs=1, device=str(device))
     scenario = env.scenario
@@ -171,6 +228,8 @@ if __name__ == "__main__":
         cfg = load_config()
         if args.comm_mode:
             cfg["comm"]["mode"] = args.comm_mode
+        checkpoint = torch.load(args.weights, map_location="cpu", weights_only=False)
+        cfg = cfg_for_checkpoint(cfg, checkpoint)
         device = torch.device("cpu")
         env, _ = make_swarm_env(cfg, num_envs=1, device="cpu")
         actor, _ = load_policy(args.weights, cfg, device)

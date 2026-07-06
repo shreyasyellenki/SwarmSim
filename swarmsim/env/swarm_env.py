@@ -97,6 +97,9 @@ class SwarmExplorationScenario(BaseScenario):
         self.coverage = torch.zeros(batch_dim, device=device)
         self.coverage_delta = torch.zeros(batch_dim, device=device)
         self._step_count = torch.zeros(batch_dim, device=device, dtype=torch.int32)
+        self._exploration_bonus = torch.zeros(batch_dim, device=device)
+        self._repulsion_penalty = torch.zeros(batch_dim, device=device)
+        self._frontier_bonus = torch.zeros(batch_dim, device=device)
 
         return world
 
@@ -219,6 +222,53 @@ class SwarmExplorationScenario(BaseScenario):
                 down[:, i * factor + j] = (region > 0).float().mean(dim=(-1, -2))
         return down
 
+    def _exploration_bonus_at(self, cx: torch.Tensor, cy: torch.Tensor) -> torch.Tensor:
+        """Count-based intrinsic bonus: higher reward for rarely visited cells."""
+        r = self.reward_cfg
+        delta = float(r.get("delta", 0.0))
+        if delta <= 0.0:
+            return torch.zeros(self.world.batch_dim, device=self.world.device)
+
+        batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
+        visit_freq = self.visit_count[batch_idx, cx, cy].float().clamp(min=1.0)
+        horizon = float(self.cfg["env"]["episode_horizon"])
+        time_decay = 1.0 - self._step_count.float().clamp(max=horizon) / horizon
+        return delta * time_decay / visit_freq
+
+    def _repulsion_penalty_for(self, agent_index: int) -> torch.Tensor:
+        """Light penalty when another agent is within repulsion_radius grid cells."""
+        r = self.reward_cfg
+        weight = float(r.get("repulsion", 0.0))
+        radius = float(r.get("repulsion_radius", 3))
+        if weight <= 0.0:
+            return torch.zeros(self.world.batch_dim, device=self.world.device)
+
+        agent = self.world.agents[agent_index]
+        cx, cy = self._world_to_cell(agent.state.pos)
+        min_dist = torch.full(
+            (self.world.batch_dim,), float("inf"), device=self.world.device
+        )
+        for other_id, other in enumerate(self.world.agents):
+            if other_id == agent_index:
+                continue
+            ox, oy = self._world_to_cell(other.state.pos)
+            dist = torch.sqrt((cx - ox).float().pow(2) + (cy - oy).float().pow(2))
+            min_dist = torch.minimum(min_dist, dist)
+
+        too_close = (min_dist < radius).float()
+        return weight * too_close
+
+    def _frontier_bonus_for(self, agent: Agent) -> torch.Tensor:
+        """Reward for being near unexplored cells (fraction unexplored in local window)."""
+        weight = float(self.reward_cfg.get("frontier", 0.0))
+        if weight <= 0.0:
+            return torch.zeros(self.world.batch_dim, device=self.world.device)
+
+        local = self._local_patch(agent)
+        patch_cells = float(self.local_k * self.local_k)
+        frontier_frac = 1.0 - local.mean(dim=-1)
+        return weight * frontier_frac
+
     def observation(self, agent: Agent):
         agent_index = self.world.agents.index(agent)
         pos = agent.state.pos
@@ -243,13 +293,22 @@ class SwarmExplorationScenario(BaseScenario):
         batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
         revisit = (self.visit_count[batch_idx, cx, cy] > 1).float()
 
+        exploration = self._exploration_bonus_at(cx, cy)
+        repulsion = self._repulsion_penalty_for(agent_index)
+        frontier = self._frontier_bonus_for(agent)
+        self._exploration_bonus = exploration
+        self._repulsion_penalty = repulsion
+        self._frontier_bonus = frontier
+
         mode = r.get("mode", "team_new_cells")
         if mode == "spread":
             personal = self.agent_new_cells[:, agent_index]
             team_progress = self.coverage_delta * float(self.grid_size * self.grid_size)
-            return r["alpha"] * personal + r["beta"] * team_progress - r["gamma"] * revisit
+            base = r["alpha"] * personal + r["beta"] * team_progress - r["gamma"] * revisit
+        else:
+            base = r["alpha"] * self.new_cells - r["gamma"] * revisit
 
-        return r["alpha"] * self.new_cells - r["gamma"] * revisit
+        return base + exploration + frontier - repulsion
 
     def done(self):
         return self.coverage >= self.coverage_target
@@ -259,6 +318,9 @@ class SwarmExplorationScenario(BaseScenario):
             "coverage": self.coverage,
             "new_cells": self.new_cells,
             "messages": self.outgoing_messages,
+            "exploration_bonus": self._exploration_bonus,
+            "frontier_bonus": self._frontier_bonus,
+            "repulsion_penalty": self._repulsion_penalty,
         }
 
     def build_global_state(self) -> torch.Tensor:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import math
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +28,16 @@ def linear_schedule(start: float, end: float, progress: float) -> float:
     return start + (end - start) * progress
 
 
+def delayed_linear_schedule(
+    start: float, end: float, global_step: int, start_step: int, total_timesteps: int
+) -> float:
+    if global_step <= start_step:
+        return start
+    span = max(total_timesteps - start_step, 1)
+    progress = (global_step - start_step) / span
+    return linear_schedule(start, end, progress)
+
+
 def apply_training_schedules(
     actor: SwarmActor,
     trainer: SwarmPPOTrainer,
@@ -41,10 +52,13 @@ def apply_training_schedules(
 
     std_sched = policy_cfg.get("std_schedule", {})
     if std_sched.get("enabled"):
-        log_std = linear_schedule(
+        start_step = int(std_sched.get("start_step", 0))
+        log_std = delayed_linear_schedule(
             float(std_sched.get("start_log_std", 0.0)),
             float(std_sched.get("end_log_std", -1.6)),
-            progress,
+            global_step,
+            start_step,
+            total_timesteps,
         )
         actor.log_std.data.fill_(log_std)
         logged["log_std"] = log_std
@@ -52,10 +66,13 @@ def apply_training_schedules(
 
     ent_sched = policy_cfg.get("entropy_schedule", {})
     if ent_sched.get("enabled"):
-        entropy_coef = linear_schedule(
+        start_step = int(ent_sched.get("start_step", 0))
+        entropy_coef = delayed_linear_schedule(
             float(ent_sched.get("start", 0.01)),
             float(ent_sched.get("end", 0.001)),
-            progress,
+            global_step,
+            start_step,
+            total_timesteps,
         )
         trainer.cfg.entropy_coef = entropy_coef
         logged["entropy_coef"] = entropy_coef
@@ -72,22 +89,44 @@ def train(
     save_name: str | None = None,
     init_log_std: float | None = None,
     std_anneal: bool = False,
+    std_anneal_start: int | None = None,
+    std_final: float | None = None,
     entropy_anneal: bool = False,
     use_gru: bool | None = None,
     reward_mode: str | None = None,
+    global_map_downsample: int | None = None,
+    curiosity: float | None = None,
+    frontier: float | None = None,
+    repulsion: float | None = None,
+    repulsion_radius: int | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
         cfg["reward"]["gamma"] = revisit_gamma
     if reward_mode is not None:
         cfg["reward"]["mode"] = reward_mode
+    if curiosity is not None:
+        cfg["reward"]["delta"] = curiosity
+    if frontier is not None:
+        cfg["reward"]["frontier"] = frontier
+    if repulsion is not None:
+        cfg["reward"]["repulsion"] = repulsion
+    if repulsion_radius is not None:
+        cfg["reward"]["repulsion_radius"] = repulsion_radius
+    if global_map_downsample is not None:
+        cfg["env"]["global_map_downsample"] = global_map_downsample
     if init_log_std is not None:
         cfg.setdefault("policy", {})["init_log_std"] = init_log_std
     policy_cfg = cfg.setdefault("policy", {})
     if use_gru is not None:
         policy_cfg["use_gru"] = use_gru
     if std_anneal:
-        policy_cfg.setdefault("std_schedule", {})["enabled"] = True
+        std_sched = policy_cfg.setdefault("std_schedule", {})
+        std_sched["enabled"] = True
+        if std_anneal_start is not None:
+            std_sched["start_step"] = std_anneal_start
+        if std_final is not None:
+            std_sched["end_log_std"] = math.log(std_final)
     if entropy_anneal:
         policy_cfg.setdefault("entropy_schedule", {})["enabled"] = True
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -158,6 +197,15 @@ def train(
             "use_gru": use_gru_flag,
             "gru_hidden": gru_hidden,
             "reward_mode": cfg["reward"].get("mode", "team_new_cells"),
+            "global_map_downsample": env_cfg.get("global_map_downsample", 0) or 0,
+            "curiosity_delta": cfg["reward"].get("delta", 0.0),
+            "frontier": cfg["reward"].get("frontier", 0.0),
+            "repulsion": cfg["reward"].get("repulsion", 0.0),
+            "repulsion_radius": cfg["reward"].get("repulsion_radius", 3),
+            "std_anneal_start": policy_cfg.get("std_schedule", {}).get("start_step", 0),
+            "std_final": float(
+                math.exp(policy_cfg.get("std_schedule", {}).get("end_log_std", math.log(0.7)))
+            ),
         }
         return ckpt
 
@@ -220,6 +268,21 @@ def train(
                 writer.add_scalar(
                     "train/message_l2",
                     scenario.outgoing_messages.norm(dim=-1).mean().item(),
+                    episode_count,
+                )
+                writer.add_scalar(
+                    "train/exploration_bonus",
+                    scenario._exploration_bonus.mean().item(),
+                    episode_count,
+                )
+                writer.add_scalar(
+                    "train/frontier_bonus",
+                    scenario._frontier_bonus.mean().item(),
+                    episode_count,
+                )
+                writer.add_scalar(
+                    "train/repulsion_penalty",
+                    scenario._repulsion_penalty.mean().item(),
                     episode_count,
                 )
                 episode_returns[done_flag] = 0.0
@@ -310,10 +373,51 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type=float, default=None, help="Revisit penalty (reward.gamma)")
     parser.add_argument("--save-name", type=str, default=None, help="Weight filename stem, e.g. swarm_policy_full_gamma03")
     parser.add_argument("--init-log-std", type=float, default=None, help="Initial log std of movement Gaussian")
-    parser.add_argument("--std-anneal", action="store_true", help="Linearly anneal log_std per policy.std_schedule")
+    parser.add_argument("--std-anneal", action="store_true", help="Anneal log_std per policy.std_schedule")
+    parser.add_argument(
+        "--std-anneal-start",
+        type=int,
+        default=None,
+        help="Global step to begin std anneal (earlier steps keep start_log_std)",
+    )
+    parser.add_argument(
+        "--std-final",
+        type=float,
+        default=None,
+        help="Target action std at end of anneal (e.g. 0.7); overrides end_log_std",
+    )
     parser.add_argument("--entropy-anneal", action="store_true", help="Linearly decay entropy_coef per policy.entropy_schedule")
     parser.add_argument("--use-gru", action="store_true", help="Use a recurrent (GRU) actor with per-episode hidden state")
     parser.add_argument("--reward-mode", choices=["team_new_cells", "spread"], default=None)
+    parser.add_argument(
+        "--no-global-map",
+        action="store_true",
+        help="Disable coarse global coverage map in actor obs (59-dim local-only)",
+    )
+    parser.add_argument(
+        "--curiosity",
+        type=float,
+        default=None,
+        help="Count-based exploration bonus weight (reward.delta)",
+    )
+    parser.add_argument(
+        "--frontier",
+        type=float,
+        default=None,
+        help="Frontier bonus weight for unexplored cells in local window (reward.frontier)",
+    )
+    parser.add_argument(
+        "--repulsion",
+        type=float,
+        default=None,
+        help="Inter-agent proximity penalty weight (reward.repulsion)",
+    )
+    parser.add_argument(
+        "--repulsion-radius",
+        type=int,
+        default=None,
+        help="Grid-cell distance threshold for repulsion penalty",
+    )
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -324,7 +428,14 @@ if __name__ == "__main__":
         save_name=args.save_name,
         init_log_std=args.init_log_std,
         std_anneal=args.std_anneal,
+        std_anneal_start=args.std_anneal_start,
+        std_final=args.std_final,
         entropy_anneal=args.entropy_anneal,
         use_gru=True if args.use_gru else None,
         reward_mode=args.reward_mode,
+        global_map_downsample=0 if args.no_global_map else None,
+        curiosity=args.curiosity,
+        frontier=args.frontier,
+        repulsion=args.repulsion,
+        repulsion_radius=args.repulsion_radius,
     )

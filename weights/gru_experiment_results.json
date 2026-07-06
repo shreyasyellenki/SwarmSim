@@ -1,0 +1,14 @@
+{
+  "gru": {
+    "revisit_gamma": 0.3,
+    "weights": "weights/swarm_policy_full_gru.pt",
+    "eval": {
+      "metric": "time_to_90pct_coverage",
+      "mean_time_to_threshold": 500.0,
+      "std_time_to_threshold": 0.0,
+      "mean_final_coverage": 0.19462109375,
+      "num_episodes": 1000,
+      "comm_mode": "full"
+    }
+  }
+}

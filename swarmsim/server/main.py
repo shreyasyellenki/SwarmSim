@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from swarmsim.env.swarm_env import load_config, make_swarm_env
-from swarmsim.policy.eval import load_policy
+from swarmsim.policy.eval import cfg_for_checkpoint, load_policy
 from swarmsim.sim.state import build_sim_state
 
 latest_state: dict = {"step": 0, "coverage_pct": 0.0, "grid": "", "agents": [], "comm_links": []}
@@ -22,12 +23,13 @@ sim_running = True
 
 class SwarmSimulator:
     def __init__(self, cfg: dict, weights_path: Path):
-        self.cfg = cfg
-        self.demo_cfg = cfg.get("demo", {"sim_hz": 12, "deterministic": True})
+        checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
+        self.cfg = cfg_for_checkpoint(cfg, checkpoint)
+        self.demo_cfg = self.cfg.get("demo", {"sim_hz": 12, "deterministic": True})
         self.device = torch.device("cpu")
-        self.env, _ = make_swarm_env(cfg, num_envs=1, device="cpu")
+        self.env, _ = make_swarm_env(self.cfg, num_envs=1, device="cpu")
         self.scenario = self.env.scenario
-        self.actor, _ = load_policy(weights_path, cfg, self.device)
+        self.actor, _ = load_policy(weights_path, self.cfg, self.device)
         self.actor.eval()
         self.obs = self.env.reset()
         self.step_count = 0
@@ -98,7 +100,30 @@ class SwarmSimulator:
 
 def _resolve_weights(cfg: dict) -> Path:
     weights_dir = Path(__file__).resolve().parents[2] / cfg["training"]["weights_dir"]
-    for name in ("swarm_policy_full.pt", "swarm_policy.pt"):
+
+    env_weights = os.environ.get("SWARMSIM_WEIGHTS")
+    if env_weights:
+        path = Path(env_weights)
+        if not path.is_absolute():
+            path = weights_dir / path
+        if path.exists():
+            return path
+        raise FileNotFoundError(f"SWARMSIM_WEIGHTS not found: {path}")
+
+    demo_name = cfg.get("demo", {}).get("weights")
+    if demo_name:
+        path = weights_dir / demo_name
+        if path.exists():
+            return path
+
+    # Prefer newest bundle/gru checkpoints, then legacy default names.
+    for name in (
+        "swarm_policy_full_bundle_d.pt",
+        "swarm_policy_full_bundle_a.pt",
+        "swarm_policy_full_gru.pt",
+        "swarm_policy_full.pt",
+        "swarm_policy.pt",
+    ):
         path = weights_dir / name
         if path.exists():
             return path

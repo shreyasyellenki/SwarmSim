@@ -60,28 +60,32 @@ All hyperparameters: [`swarmsim/config.yaml`](swarmsim/config.yaml)
 - [x] Demo tuning: `demo.sim_hz: 12`, deterministic actions, `max_speed` cap
 - [x] **Bug fix:** grid texture Y-flip / axis mapping so explored cells align with agent positions (`scene.js`)
 
-### Analysis (scripts exist, full runs pending)
+### Analysis
 - [x] `swarmsim/analysis/run_ablation.py` — compare no/null/full comm
 - [x] `swarmsim/analysis/comm_analysis.py` — message–state correlation heatmap
+- [ ] Comm ablation at Bundle F config (null/none baselines) — pending
 
-### Known eval result (smoke weights)
-- Mean final coverage ~19%, never hits 90% in 500 steps — expected for ~4k-step training
+### Reward shaping + training experiments (2026-07-05/06)
+- [x] **Count-based curiosity** (`reward.delta`, `--curiosity`) + **inter-agent repulsion** (`--repulsion`)
+- [x] **Frontier reward** (`reward.frontier`, `--frontier`) — bonus for unexplored cells in local 5×5
+- [x] **Delayed std anneal** (`--std-anneal`, `--std-anneal-start`, `--std-final`)
+- [x] **Local-only actor obs** (`--no-global-map`, 59-dim) for load-bearing comm
+- [x] Demo server: checkpoint-aware obs dim + `SWARMSIM_WEIGHTS` / `demo.weights` in config
+- [x] Experiment scripts: `run_bundle_a.sh` … `run_bundle_f.sh`
+
+### Best eval result (deterministic, 50 seeds × 20 episodes)
+- **Bundle F** (`swarm_policy_full_bundle_f.pt`): **35.9%** mean final coverage
+- Prior best: Bundle A 21.9%, Exp 5 GRU 19.5%
 
 ---
 
 ## Work remaining (priority order)
 
 ### 1. Training (most important)
-- [ ] **Long `full` training run** on Colab or local GPU:
-  ```bash
-  python -m swarmsim.policy.train_swarm --comm-mode full --timesteps 500000 --num-envs 8 --rollout-steps 2048
-  ```
-- [ ] **Ablation baselines:** `null` and `none` with same timesteps
-- [ ] **Eval all three** and record results:
-  ```bash
-  python -m swarmsim.analysis.run_ablation --weights-dir weights
-  ```
-- [ ] Target: full-comm beats null-comm beats no-comm on `time_to_90pct_coverage` (50 seeds × 20 eps)
+- [ ] **Comm ablation** at Bundle F config (`null` / `none`, same hyperparams as `full`)
+- [ ] If deterministic >40% and comm wins: record ablation in README + resume bullets
+- [ ] **Bundle F + gentle anneal** (after visual confirms sweeping, not streaking): anneal start ~220k, std-final ~0.8
+- [ ] Target: 75%+ deterministic coverage (may need task scaling: smaller grid / more agents)
 
 ### 2. Analysis + README
 - [ ] Run `comm_analysis.py` on trained `full` weights; add correlation plot to README
@@ -116,7 +120,7 @@ All hyperparameters: [`swarmsim/config.yaml`](swarmsim/config.yaml)
 | `swarmsim/policy/ppo.py` | PPO implementation |
 | `swarmsim/server/main.py` | Live demo server |
 | `swarmsim/visualizer/scene.js` | Three.js rendering |
-| `weights/swarm_policy_full.pt` | Demo weights (gitignored) |
+| `weights/swarm_policy_full_bundle_f.pt` | **Best demo weights** (35.9% det. eval) |
 
 ---
 
@@ -144,27 +148,61 @@ Stage 1 MuJoCo is a separate track; weights do not transfer.
 
 ---
 
-## Actor observation (as of Exp 3)
+## Actor observation
 
-Each agent's observation = `[norm_pos(2), norm_vel(2), local_5x5(25), neighbor_rel(6), incoming_msgs(24), global_map(64)]` = **123 dims** with the global map on.
+**59 dims (local-only, Bundle A/F default):** `[norm_pos(2), norm_vel(2), local_5x5(25), neighbor_rel(6), incoming_msgs(24)]`
 
-- **`env.global_map_downsample: 8`** — actor sees an 8×8 coarse "fraction explored" map (shared belief state). Set to `0` to disable (reverts to 59-dim local-only obs).
-- Added in Experiment 3 (Path A) to fix corner-clustering: with only a 5×5 local window, a deterministic policy can't perceive where unexplored space is, so it collapses to a constant heading. The critic already used this downsampled map; now the actor does too (shared helper `_downsampled_explored`).
-- **Tradeoff:** less "purely decentralized" — frame as a shared belief map. On an open grid this also makes comm largely redundant (agents see the same holes); comm becomes load-bearing once observability is tightened (obstacles / private maps).
+**123 dims (with global map):** above + `global_map(64)` when `env.global_map_downsample: 8`
+
+- Use `--no-global-map` for 59-dim obs (comm becomes load-bearing).
+- Demo/eval infer obs layout from checkpoint metadata + weight shapes.
 
 ---
 
-## Reward / policy tuning history (see STORYLINE.md for full log)
+## Reward (default `team_new_cells`)
 
-- `reward.gamma` (revisit penalty): **0.3** (was 0.01). Sweep 0.01→0.3→0.5 gave 13%→14.9%→13% deterministic coverage.
-- `policy.init_log_std`: **0.0** default; sweep to -0.7/-1.6 did not help (~13%).
-- **Learned log_std without anneal:** policies end at **~+2.0 (std≈7.4)** — noise grows; see Exp 4.
-- **Exp 4 std anneal:** `--std-anneal --entropy-anneal` → final std≈0.20, deterministic coverage **13.2%** (vs 14.9% no anneal) — diagnostic confirmed, eval gain did not materialize at 300k.
-- **Exp 5 GRU actor:** `--use-gru` → deterministic coverage **19.5%** (best so far). Weights: `swarm_policy_full_gru.pt`.
-- **Overnight Exp 6+7:** `bash scripts/run_overnight_exp67.sh` — 1M steps each, no crash. Results: Exp 6 **13.5%**, Exp 7 **14.7%** (below Exp 5 GRU **19.5%** @ 300k). Best weights for demo/eval: `swarm_policy_full_gru.pt`.
-- Ablation (none/null/full) at 300k, γ=0.01: 18.3% / 13.1% / 13.0% — comm did **not** help on open grid.
-- **Exp 3 global map in actor obs** (300k, γ=0.3): **12.8%** deterministic coverage vs **14.9%** without map — did not fix corner-clustering hypothesis at this budget.
-- Runs use **300k steps** (1M crashes ~470k on reward saturation → advantage collapse → NaN; guards added in ppo.py/train_swarm.py).
+```
+reward = alpha * new_cells - gamma * revisit + delta * curiosity + frontier * frontier_frac - repulsion * proximity
+```
+
+| Key | Default | Bundle F |
+|-----|---------|----------|
+| `alpha` | 1.0 | team new cells per step |
+| `gamma` | 0.3 | revisit penalty |
+| `delta` (`--curiosity`) | 0 | **0.3** count-based exploration bonus |
+| `frontier` (`--frontier`) | 0 | **0.2** unexplored fraction in 5×5 window |
+| `repulsion` (`--repulsion`) | 0 | **0.05** when agents within 3 cells |
+
+Team rewards are averaged across agents in `train_swarm.py` for PPO.
+
+---
+
+## Experiment results summary (deterministic eval)
+
+| Run | Coverage | Notes |
+|-----|----------|-------|
+| γ=0.3 baseline | 14.9% | |
+| Exp 3 global map | 12.8% | observability alone insufficient |
+| Exp 4 std anneal → 0.20 | 13.2% | |
+| **Exp 5 GRU @ 300k** | **19.5%** | memory helps |
+| GRU @ 500k (no reward change) | 13.0% | longer ≠ better |
+| Overnight Exp 6+7 @ 1M | 13.5% / 14.7% | anneal + spread hurt |
+| **Bundle A** (curiosity + repulsion, GRU 500k) | **21.9%** | repulsion fixes corner clustering |
+| Bundle D (anneal @ 150k, std 0.7, 250k) | 13.1% det ≈ stoch | gap closed, bad mean committed |
+| **Bundle F** (frontier 0.2, 250k, no anneal) | **35.9%** | **current best** |
+
+**Train/eval gap diagnosis:** stochastic train coverage → ~100% while deterministic eval ~22% (Bundle A) because mean policy draws thin diagonal streaks; noise accidentally fills gaps. Frontier reward addresses sweeping behavior.
+
+---
+
+## Reward / policy tuning history (see STORYLINE.md for narrative)
+
+- `reward.gamma` (revisit penalty): **0.3** (was 0.01).
+- **Exp 5 GRU:** `--use-gru` → **19.5%**.
+- **Bundle A:** `--no-global-map --curiosity 0.3 --repulsion 0.05 --use-gru` @ 500k → **21.9%**.
+- **Bundle F:** + `--frontier 0.2` @ 250k → **35.9%** (demo default).
+- **Std anneal CLI:** `--std-anneal --std-anneal-start N --std-final 0.7` (delayed; don't start during breakthrough ~110k–200k).
+- PPO NaN guards in `ppo.py` / `train_swarm.py` for long runs.
 
 ---
 
@@ -173,21 +211,23 @@ Each agent's observation = `[norm_pos(2), norm_vel(2), local_5x5(25), neighbor_r
 ```bash
 source .venv/bin/activate
 
-# Train
-python -m swarmsim.policy.train_swarm --comm-mode full --timesteps 200000 --num-envs 4 --rollout-steps 256
+# Train (Bundle F — current best config)
+python -m swarmsim.policy.train_swarm --comm-mode full --timesteps 250000 \
+  --num-envs 4 --rollout-steps 256 --gamma 0.3 --use-gru --no-global-map \
+  --curiosity 0.3 --frontier 0.2 --repulsion 0.05 --save-name swarm_policy_full_bundle_f
 
-# Demo
+# Or use script
+bash scripts/run_bundle_f.sh
+
+# Demo (default: bundle_f weights in config.yaml)
 bash scripts/run_demo.sh
-# → http://localhost:8000
+SWARMSIM_WEIGHTS=swarm_policy_full_bundle_a.pt bash scripts/run_demo.sh
 
 # Eval
-python -m swarmsim.policy.eval --weights weights/swarm_policy_full.pt --episodes 5
+python -m swarmsim.policy.eval --weights weights/swarm_policy_full_bundle_f.pt
 
 # Ablation
 python -m swarmsim.analysis.run_ablation --weights-dir weights
-
-# Comm analysis
-python -m swarmsim.analysis.comm_analysis --weights weights/swarm_policy_full.pt
 ```
 
 ---
@@ -195,7 +235,7 @@ python -m swarmsim.analysis.comm_analysis --weights weights/swarm_policy_full.pt
 ## Gotchas
 
 1. **`.gitignore`:** `ENV/` matches `swarmsim/env/` on macOS — exceptions added as `!swarmsim/env/**`
-2. **Undertrained demo:** corner-clustering is policy quality, not just viz bugs
+2. **Demo weights:** `demo.weights` in config or `SWARMSIM_WEIGHTS` env; server matches checkpoint obs dim
 3. **Grid bytes:** NumPy `explored[cx, cy]` C-order; frontend must flip Y to match `normToWorld()`
 4. **Demo speed:** `demo.sim_hz` in config (default 12)
 5. **Stage 1:** do not modify MuJoCo files when working on Stage 2 unless fixing bugs

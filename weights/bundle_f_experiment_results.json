@@ -1,0 +1,18 @@
+{
+  "bundle_f": {
+    "revisit_gamma": 0.3,
+    "curiosity": 0.3,
+    "frontier": 0.2,
+    "repulsion": 0.05,
+    "global_map": false,
+    "weights": "weights/swarm_policy_full_bundle_f.pt",
+    "eval_deterministic": {
+      "metric": "time_to_90pct_coverage",
+      "mean_time_to_threshold": 500.0,
+      "std_time_to_threshold": 0.0,
+      "mean_final_coverage": 0.35921484375,
+      "num_episodes": 1000,
+      "comm_mode": "full"
+    }
+  }
+}

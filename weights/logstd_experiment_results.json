@@ -1,0 +1,28 @@
+{
+  "init_log_std_-0.7": {
+    "init_log_std": -0.7,
+    "revisit_gamma": 0.3,
+    "weights": "weights/swarm_policy_full_ils07.pt",
+    "eval": {
+      "metric": "time_to_90pct_coverage",
+      "mean_time_to_threshold": 500.0,
+      "std_time_to_threshold": 0.0,
+      "mean_final_coverage": 0.1291044921875,
+      "num_episodes": 1000,
+      "comm_mode": "full"
+    }
+  },
+  "init_log_std_-1.6": {
+    "init_log_std": -1.6,
+    "revisit_gamma": 0.3,
+    "weights": "weights/swarm_policy_full_ils16.pt",
+    "eval": {
+      "metric": "time_to_90pct_coverage",
+      "mean_time_to_threshold": 500.0,
+      "std_time_to_threshold": 0.0,
+      "mean_final_coverage": 0.132546875,
+      "num_episodes": 1000,
+      "comm_mode": "full"
+    }
+  }
+}
