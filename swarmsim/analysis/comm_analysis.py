@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from swarmsim.env.swarm_env import load_config, make_swarm_env
-from swarmsim.policy.eval import load_policy, run_episode
+from swarmsim.policy.eval import cfg_for_checkpoint, load_policy
 
 
 def collect_message_data(cfg: dict, weights_path: Path, num_episodes: int = 10) -> dict:
@@ -110,6 +110,9 @@ def main():
     if not args.weights.exists():
         print(f"Weights not found: {args.weights}. Run train_swarm.py first.")
         return
+
+    checkpoint = torch.load(args.weights, map_location="cpu", weights_only=False)
+    cfg = cfg_for_checkpoint(cfg, checkpoint)
 
     records = collect_message_data(cfg, args.weights, args.episodes)
     corr = compute_correlations(records)

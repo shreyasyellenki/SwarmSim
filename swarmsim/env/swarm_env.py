@@ -100,6 +100,7 @@ class SwarmExplorationScenario(BaseScenario):
         self._exploration_bonus = torch.zeros(batch_dim, device=device)
         self._repulsion_penalty = torch.zeros(batch_dim, device=device)
         self._frontier_bonus = torch.zeros(batch_dim, device=device)
+        self._diversity_penalty = torch.zeros(batch_dim, device=device)
 
         return world
 
@@ -269,6 +270,38 @@ class SwarmExplorationScenario(BaseScenario):
         frontier_frac = 1.0 - local.mean(dim=-1)
         return weight * frontier_frac
 
+    def _heading_diversity_penalty_for(self, agent_index: int) -> torch.Tensor:
+        """Penalty when velocity aligns with in-range neighbors (encourages heading spread)."""
+        weight = float(self.reward_cfg.get("diversity", 0.0))
+        if weight <= 0.0:
+            return torch.zeros(self.world.batch_dim, device=self.world.device)
+
+        agent = self.world.agents[agent_index]
+        vel_i = agent.state.vel[:, :2]
+        speed_i = torch.linalg.vector_norm(vel_i, dim=-1)
+        dir_i = vel_i / speed_i.unsqueeze(-1).clamp(min=1e-6)
+
+        total_sim = torch.zeros(self.world.batch_dim, device=self.world.device)
+        count = torch.zeros(self.world.batch_dim, device=self.world.device)
+        for other_id, other in enumerate(self.world.agents):
+            if other_id == agent_index:
+                continue
+            delta = other.state.pos - agent.state.pos
+            dist = torch.linalg.vector_norm(delta, dim=-1)
+            in_range = dist <= self.comm_radius_world
+            vel_j = other.state.vel[:, :2]
+            speed_j = torch.linalg.vector_norm(vel_j, dim=-1)
+            moving = (speed_i > 1e-4) & (speed_j > 1e-4) & in_range
+            dir_j = vel_j / speed_j.unsqueeze(-1).clamp(min=1e-6)
+            similarity = (dir_i * dir_j).sum(dim=-1).clamp(-1.0, 1.0)
+            total_sim = total_sim + similarity * moving.float()
+            count = count + moving.float()
+
+        mean_sim = total_sim / count.clamp(min=1.0)
+        has_neighbor = count > 0
+        penalty = weight * mean_sim * has_neighbor.float()
+        return penalty
+
     def observation(self, agent: Agent):
         agent_index = self.world.agents.index(agent)
         pos = agent.state.pos
@@ -296,9 +329,11 @@ class SwarmExplorationScenario(BaseScenario):
         exploration = self._exploration_bonus_at(cx, cy)
         repulsion = self._repulsion_penalty_for(agent_index)
         frontier = self._frontier_bonus_for(agent)
+        diversity = self._heading_diversity_penalty_for(agent_index)
         self._exploration_bonus = exploration
         self._repulsion_penalty = repulsion
         self._frontier_bonus = frontier
+        self._diversity_penalty = diversity
 
         mode = r.get("mode", "team_new_cells")
         if mode == "spread":
@@ -308,7 +343,7 @@ class SwarmExplorationScenario(BaseScenario):
         else:
             base = r["alpha"] * self.new_cells - r["gamma"] * revisit
 
-        return base + exploration + frontier - repulsion
+        return base + exploration + frontier - repulsion - diversity
 
     def done(self):
         return self.coverage >= self.coverage_target
@@ -321,6 +356,7 @@ class SwarmExplorationScenario(BaseScenario):
             "exploration_bonus": self._exploration_bonus,
             "frontier_bonus": self._frontier_bonus,
             "repulsion_penalty": self._repulsion_penalty,
+            "diversity_penalty": self._diversity_penalty,
         }
 
     def build_global_state(self) -> torch.Tensor:

@@ -106,9 +106,10 @@ class SwarmRolloutBuffer:
       self.advantages = torch.zeros(size, device=device)
       self.returns = torch.zeros(size, device=device)
       self.hidden_in = torch.zeros((size, hidden_dim), device=device) if hidden_dim > 0 else None
+      self.velocities = torch.zeros((size, 2), device=device)
       self._global_dim: int | None = None
 
-  def add(self, obs, global_state, action, reward, done, value, log_prob, hidden_in=None):
+  def add(self, obs, global_state, action, reward, done, value, log_prob, hidden_in=None, velocity=None):
       if self._global_dim is None:
           self._global_dim = global_state.shape[-1]
           self.global_states = torch.zeros((self.size, self._global_dim), device=self.device)
@@ -122,6 +123,8 @@ class SwarmRolloutBuffer:
       self.log_probs[i] = log_prob
       if self.hidden_in is not None and hidden_in is not None:
           self.hidden_in[i] = hidden_in
+      if velocity is not None:
+          self.velocities[i] = velocity
       self.ptr += 1
 
   def full(self) -> bool:
@@ -206,12 +209,19 @@ class SwarmPPOTrainer:
     """PPO trainer for swarm actor + centralized critic."""
 
     def __init__(
-        self, actor: nn.Module, critic: nn.Module, cfg: PPOConfig, device: torch.device, train_log_std: bool = True
+        self,
+        actor: nn.Module,
+        critic: nn.Module,
+        cfg: PPOConfig,
+        device: torch.device,
+        train_log_std: bool = True,
+        message_heading_aux_coef: float = 0.0,
     ):
         self.actor = actor
         self.critic = critic
         self.cfg = cfg
         self.device = device
+        self.message_heading_aux_coef = message_heading_aux_coef
         if train_log_std:
             actor_params = list(actor.parameters())
         else:
@@ -230,7 +240,7 @@ class SwarmPPOTrainer:
         returns = torch.clamp(buffer.returns[:n], -20.0, 20.0)
 
         indices = np.arange(n)
-        policy_losses, value_losses, entropies = [], [], []
+        policy_losses, value_losses, entropies, aux_losses = [], [], [], []
 
         for _ in range(cfg.num_epochs):
             np.random.shuffle(indices)
@@ -244,8 +254,9 @@ class SwarmPPOTrainer:
                 mb_adv = advantages[mb]
                 mb_returns = returns[mb]
                 mb_hidden = buffer.hidden_in[mb] if buffer.hidden_in is not None else None
+                mb_vel = buffer.velocities[mb]
 
-                log_prob, entropy, _ = self.actor.evaluate(mb_obs, mb_actions, mb_hidden)
+                log_prob, entropy, message = self.actor.evaluate(mb_obs, mb_actions, mb_hidden)
                 values = self.critic(mb_global)
                 if not torch.isfinite(log_prob).all() or not torch.isfinite(values).all():
                     continue
@@ -255,6 +266,23 @@ class SwarmPPOTrainer:
                 policy_loss = -torch.min(surr1, surr2).mean()
                 value_loss = (mb_returns - values).pow(2).mean()
                 loss = policy_loss + cfg.value_coef * value_loss - cfg.entropy_coef * entropy.mean()
+
+                aux_loss_val = 0.0
+                if (
+                    self.message_heading_aux_coef > 0.0
+                    and message is not None
+                    and buffer.actions.shape[-1] > 2
+                ):
+                    speed = torch.linalg.vector_norm(mb_vel, dim=-1)
+                    moving = speed > 1e-4
+                    if moving.any():
+                        heading_target = mb_vel / speed.unsqueeze(-1).clamp(min=1e-6)
+                        msg_heading = message[:, :2]
+                        per_sample = (msg_heading - heading_target.detach()).pow(2).sum(dim=-1)
+                        aux_loss = per_sample[moving].mean()
+                        loss = loss + self.message_heading_aux_coef * aux_loss
+                        aux_loss_val = aux_loss.item()
+
                 if not torch.isfinite(loss):
                     continue
 
@@ -271,9 +299,14 @@ class SwarmPPOTrainer:
                 policy_losses.append(policy_loss.item())
                 value_losses.append(value_loss.item())
                 entropies.append(entropy.mean().item())
+                if aux_loss_val:
+                    aux_losses.append(aux_loss_val)
 
-        return {
+        metrics = {
             "policy_loss": float(np.mean(policy_losses)) if policy_losses else 0.0,
             "value_loss": float(np.mean(value_losses)) if value_losses else 0.0,
             "entropy": float(np.mean(entropies)) if entropies else 0.0,
         }
+        if aux_losses:
+            metrics["message_heading_aux_loss"] = float(np.mean(aux_losses))
+        return metrics

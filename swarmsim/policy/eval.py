@@ -30,6 +30,10 @@ def apply_checkpoint_config(cfg: dict, checkpoint: dict) -> dict:
         updated["reward"]["repulsion"] = checkpoint["repulsion"]
     if "repulsion_radius" in checkpoint:
         updated["reward"]["repulsion_radius"] = checkpoint["repulsion_radius"]
+    if "diversity" in checkpoint:
+        updated["reward"]["diversity"] = checkpoint["diversity"]
+    if "message_heading_aux" in checkpoint:
+        updated["reward"]["message_heading_aux"] = checkpoint["message_heading_aux"]
     return updated
 
 

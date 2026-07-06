@@ -99,6 +99,8 @@ def train(
     frontier: float | None = None,
     repulsion: float | None = None,
     repulsion_radius: int | None = None,
+    diversity: float | None = None,
+    message_heading_aux: float | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
@@ -113,6 +115,10 @@ def train(
         cfg["reward"]["repulsion"] = repulsion
     if repulsion_radius is not None:
         cfg["reward"]["repulsion_radius"] = repulsion_radius
+    if diversity is not None:
+        cfg["reward"]["diversity"] = diversity
+    if message_heading_aux is not None:
+        cfg["reward"]["message_heading_aux"] = message_heading_aux
     if global_map_downsample is not None:
         cfg["env"]["global_map_downsample"] = global_map_downsample
     if init_log_std is not None:
@@ -162,7 +168,15 @@ def train(
     ).to(device)
     critic = CentralizedCritic(global_dim).to(device)
     std_schedule_on = policy_cfg.get("std_schedule", {}).get("enabled", False)
-    trainer = SwarmPPOTrainer(actor, critic, ppo_cfg, device, train_log_std=not std_schedule_on)
+    aux_coef = float(cfg["reward"].get("message_heading_aux", 0.0))
+    trainer = SwarmPPOTrainer(
+        actor,
+        critic,
+        ppo_cfg,
+        device,
+        train_log_std=not std_schedule_on,
+        message_heading_aux_coef=aux_coef if comm_cfg["mode"] == "full" else 0.0,
+    )
 
     steps_per_rollout = ppo_cfg.rollout_steps
     hidden_dim = actor.gru_hidden
@@ -202,6 +216,8 @@ def train(
             "frontier": cfg["reward"].get("frontier", 0.0),
             "repulsion": cfg["reward"].get("repulsion", 0.0),
             "repulsion_radius": cfg["reward"].get("repulsion_radius", 3),
+            "diversity": cfg["reward"].get("diversity", 0.0),
+            "message_heading_aux": cfg["reward"].get("message_heading_aux", 0.0),
             "std_anneal_start": policy_cfg.get("std_schedule", {}).get("start_step", 0),
             "std_final": float(
                 math.exp(policy_cfg.get("std_schedule", {}).get("end_log_std", math.log(0.7)))
@@ -232,7 +248,7 @@ def train(
                     full_action = torch.cat([move, message], dim=-1)
 
                 actions_to_env.append(full_action)
-                step_records.append((agent_obs, global_state, full_action, log_prob, value, h_in))
+                step_records.append((agent_idx, agent_obs, global_state, full_action, log_prob, value, h_in))
 
             next_obs, rews, dones, _ = env.step(actions_to_env)
 
@@ -241,7 +257,8 @@ def train(
             if done_flag.ndim > 1:
                 done_flag = done_flag.any(dim=-1)
 
-            for agent_obs, gs, action, log_prob, value, h_in in step_records:
+            for agent_idx, agent_obs, gs, action, log_prob, value, h_in in step_records:
+                agent_vel = scenario.world.agents[agent_idx].state.vel[:, :2]
                 for env_i in range(num_envs):
                     buffer.add(
                         agent_obs[env_i],
@@ -252,6 +269,7 @@ def train(
                         value[env_i],
                         log_prob[env_i],
                         hidden_in=h_in[env_i] if h_in is not None else None,
+                        velocity=agent_vel[env_i],
                     )
 
             if actor.use_gru and done_flag.any():
@@ -283,6 +301,11 @@ def train(
                 writer.add_scalar(
                     "train/repulsion_penalty",
                     scenario._repulsion_penalty.mean().item(),
+                    episode_count,
+                )
+                writer.add_scalar(
+                    "train/diversity_penalty",
+                    scenario._diversity_penalty.mean().item(),
                     episode_count,
                 )
                 episode_returns[done_flag] = 0.0
@@ -418,6 +441,18 @@ if __name__ == "__main__":
         default=None,
         help="Grid-cell distance threshold for repulsion penalty",
     )
+    parser.add_argument(
+        "--diversity",
+        type=float,
+        default=None,
+        help="Heading-alignment penalty vs in-range neighbors (reward.diversity)",
+    )
+    parser.add_argument(
+        "--message-heading-aux",
+        type=float,
+        default=None,
+        help="Aux loss weight: msg[:2] tracks velocity heading (Bundle H)",
+    )
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -438,4 +473,6 @@ if __name__ == "__main__":
         frontier=args.frontier,
         repulsion=args.repulsion,
         repulsion_radius=args.repulsion_radius,
+        diversity=args.diversity,
+        message_heading_aux=args.message_heading_aux,
     )

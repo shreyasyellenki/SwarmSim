@@ -63,15 +63,16 @@ All hyperparameters: [`swarmsim/config.yaml`](swarmsim/config.yaml)
 ### Analysis
 - [x] `swarmsim/analysis/run_ablation.py` — compare no/null/full comm
 - [x] `swarmsim/analysis/comm_analysis.py` — message–state correlation heatmap
-- [ ] Comm ablation at Bundle F config (null/none baselines) — pending
+- [x] Comm ablation at Bundle G config — full 21.6% > null 12.9% > none 12.7%
 
 ### Reward shaping + training experiments (2026-07-05/06)
 - [x] **Count-based curiosity** (`reward.delta`, `--curiosity`) + **inter-agent repulsion** (`--repulsion`)
 - [x] **Frontier reward** (`reward.frontier`, `--frontier`) — bonus for unexplored cells in local 5×5
-- [x] **Delayed std anneal** (`--std-anneal`, `--std-anneal-start`, `--std-final`)
+- [x] **Heading diversity penalty** (`reward.diversity`, `--diversity`) — Bundle G
+- [x] **Message heading aux loss** (`--message-heading-aux`) — Bundle H (implemented, not run)
 - [x] **Local-only actor obs** (`--no-global-map`, 59-dim) for load-bearing comm
 - [x] Demo server: checkpoint-aware obs dim + `SWARMSIM_WEIGHTS` / `demo.weights` in config
-- [x] Experiment scripts: `run_bundle_a.sh` … `run_bundle_f.sh`
+- [x] Experiment scripts: `run_bundle_a.sh` … `run_bundle_h.sh`, `run_bundle_g_ablation.sh`
 
 ### After each bundle run (required)
 
@@ -99,8 +100,8 @@ Cursor agents: treat this checklist as mandatory at the end of every bundle run 
 ## Work remaining (priority order)
 
 ### 1. Training (most important)
-- [ ] **Comm ablation** at Bundle F config (`null` / `none`, same hyperparams as `full`)
-- [ ] If deterministic >40% and comm wins: record ablation in README + resume bullets
+- [ ] **Bundle H** (G + message heading aux 0.05) — only if revisiting coordination
+- [ ] Tune diversity down (0.03–0.05) or try random init heading without hurting F's sweep
 - [ ] **Bundle F + gentle anneal** (after visual confirms sweeping, not streaking): anneal start ~220k, std-final ~0.8
 - [ ] Target: 75%+ deterministic coverage (may need task scaling: smaller grid / more agents)
 
@@ -206,7 +207,8 @@ Team rewards are averaged across agents in `train_swarm.py` for PPO.
 | Overnight Exp 6+7 @ 1M | 13.5% / 14.7% | anneal + spread hurt |
 | **Bundle A** (curiosity + repulsion, GRU 500k) | **21.9%** | repulsion fixes corner clustering |
 | Bundle D (anneal @ 150k, std 0.7, 250k) | 13.1% det ≈ stoch | gap closed, bad mean committed |
-| **Bundle F** (frontier 0.2, 250k, no anneal) | **35.9%** | **current best** |
+| **Bundle F** (frontier 0.2, 250k) | **35.9%** | **current best / demo default** |
+| Bundle G (+ diversity 0.1) | 21.6% | diversity hurt vs F; comm ablation: full > null > none |
 
 **Train/eval gap diagnosis:** stochastic train coverage → ~100% while deterministic eval ~22% (Bundle A) because mean policy draws thin diagonal streaks; noise accidentally fills gaps. Frontier reward addresses sweeping behavior.
 

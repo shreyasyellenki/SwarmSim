@@ -1,0 +1,28 @@
+{
+  "bundle_g_ablation": {
+    "full": {
+      "metric": "time_to_90pct_coverage",
+      "mean_time_to_threshold": 500.0,
+      "std_time_to_threshold": 0.0,
+      "mean_final_coverage": 0.2163671875,
+      "num_episodes": 1000,
+      "comm_mode": "full"
+    },
+    "null": {
+      "metric": "time_to_90pct_coverage",
+      "mean_time_to_threshold": 500.0,
+      "std_time_to_threshold": 0.0,
+      "mean_final_coverage": 0.12875,
+      "num_episodes": 1000,
+      "comm_mode": "null"
+    },
+    "none": {
+      "metric": "time_to_90pct_coverage",
+      "mean_time_to_threshold": 500.0,
+      "std_time_to_threshold": 0.0,
+      "mean_final_coverage": 0.1273720703125,
+      "num_episodes": 1000,
+      "comm_mode": "none"
+    }
+  }
+}
