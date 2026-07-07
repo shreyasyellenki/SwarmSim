@@ -101,6 +101,7 @@ def train(
     repulsion_radius: int | None = None,
     diversity: float | None = None,
     message_heading_aux: float | None = None,
+    episode_horizon: int | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
@@ -119,6 +120,8 @@ def train(
         cfg["reward"]["diversity"] = diversity
     if message_heading_aux is not None:
         cfg["reward"]["message_heading_aux"] = message_heading_aux
+    if episode_horizon is not None:
+        cfg["env"]["episode_horizon"] = episode_horizon
     if global_map_downsample is not None:
         cfg["env"]["global_map_downsample"] = global_map_downsample
     if init_log_std is not None:
@@ -218,6 +221,7 @@ def train(
             "repulsion_radius": cfg["reward"].get("repulsion_radius", 3),
             "diversity": cfg["reward"].get("diversity", 0.0),
             "message_heading_aux": cfg["reward"].get("message_heading_aux", 0.0),
+            "episode_horizon": env_cfg.get("episode_horizon", 500),
             "std_anneal_start": policy_cfg.get("std_schedule", {}).get("start_step", 0),
             "std_final": float(
                 math.exp(policy_cfg.get("std_schedule", {}).get("end_log_std", math.log(0.7)))
@@ -453,6 +457,12 @@ if __name__ == "__main__":
         default=None,
         help="Aux loss weight: msg[:2] tracks velocity heading (Bundle H)",
     )
+    parser.add_argument(
+        "--episode-horizon",
+        type=int,
+        default=None,
+        help="Max steps per episode (env.episode_horizon)",
+    )
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -475,4 +485,5 @@ if __name__ == "__main__":
         repulsion_radius=args.repulsion_radius,
         diversity=args.diversity,
         message_heading_aux=args.message_heading_aux,
+        episode_horizon=args.episode_horizon,
     )
