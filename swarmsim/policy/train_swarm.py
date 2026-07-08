@@ -77,6 +77,20 @@ def apply_training_schedules(
         trainer.cfg.entropy_coef = entropy_coef
         logged["entropy_coef"] = entropy_coef
 
+    ppo_cfg = cfg.get("ppo", {})
+    lr_sched = ppo_cfg.get("lr_schedule", {})
+    if lr_sched.get("enabled"):
+        start_step = int(lr_sched.get("start_step", 0))
+        lr = delayed_linear_schedule(
+            float(lr_sched.get("start", ppo_cfg.get("learning_rate", 3e-4))),
+            float(lr_sched.get("end", 3e-5)),
+            global_step,
+            start_step,
+            total_timesteps,
+        )
+        trainer.set_learning_rate(lr)
+        logged["learning_rate"] = lr
+
     return logged
 
 
@@ -92,6 +106,8 @@ def train(
     std_anneal_start: int | None = None,
     std_final: float | None = None,
     entropy_anneal: bool = False,
+    lr_anneal: bool = False,
+    lr_final: float | None = None,
     use_gru: bool | None = None,
     reward_mode: str | None = None,
     global_map_downsample: int | None = None,
@@ -138,6 +154,13 @@ def train(
             std_sched["end_log_std"] = math.log(std_final)
     if entropy_anneal:
         policy_cfg.setdefault("entropy_schedule", {})["enabled"] = True
+    if lr_anneal:
+        ppo_cfg = cfg.setdefault("ppo", {})
+        lr_sched = ppo_cfg.setdefault("lr_schedule", {})
+        lr_sched["enabled"] = True
+        lr_sched.setdefault("start", ppo_cfg.get("learning_rate", 3e-4))
+        if lr_final is not None:
+            lr_sched["end"] = lr_final
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ppo_cfg = PPOConfig.from_config(cfg)
     if rollout_steps is not None:
@@ -414,6 +437,17 @@ if __name__ == "__main__":
         help="Target action std at end of anneal (e.g. 0.7); overrides end_log_std",
     )
     parser.add_argument("--entropy-anneal", action="store_true", help="Linearly decay entropy_coef per policy.entropy_schedule")
+    parser.add_argument(
+        "--lr-anneal",
+        action="store_true",
+        help="Linearly decay Adam learning rate per ppo.lr_schedule",
+    )
+    parser.add_argument(
+        "--lr-final",
+        type=float,
+        default=None,
+        help="Target learning rate at end of lr anneal (e.g. 3e-5)",
+    )
     parser.add_argument("--use-gru", action="store_true", help="Use a recurrent (GRU) actor with per-episode hidden state")
     parser.add_argument("--reward-mode", choices=["team_new_cells", "spread"], default=None)
     parser.add_argument(
@@ -476,6 +510,8 @@ if __name__ == "__main__":
         std_anneal_start=args.std_anneal_start,
         std_final=args.std_final,
         entropy_anneal=args.entropy_anneal,
+        lr_anneal=args.lr_anneal,
+        lr_final=args.lr_final,
         use_gru=True if args.use_gru else None,
         reward_mode=args.reward_mode,
         global_map_downsample=0 if args.no_global_map else None,

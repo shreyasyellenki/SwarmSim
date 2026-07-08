@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 import numpy as np
 import torch
@@ -43,7 +43,8 @@ class PPOConfig:
     @classmethod
     def from_config(cls, cfg: dict) -> "PPOConfig":
         p = cfg["ppo"]
-        return cls(**p)
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in p.items() if k in known})
 
 
 class RolloutBuffer:
@@ -228,6 +229,10 @@ class SwarmPPOTrainer:
             actor_params = [p for n, p in actor.named_parameters() if n != "log_std"]
         params = actor_params + list(critic.parameters())
         self.optimizer = torch.optim.Adam(params, lr=cfg.learning_rate)
+
+    def set_learning_rate(self, lr: float) -> None:
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
 
     def update(self, buffer: SwarmRolloutBuffer) -> dict[str, float]:
         cfg = self.cfg

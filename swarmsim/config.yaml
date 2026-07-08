@@ -32,6 +32,11 @@ ppo:
   entropy_coef: 0.01
   learning_rate: 0.0003
   max_grad_norm: 0.5
+  lr_schedule:
+    enabled: false
+    start: 0.0003   # initial Adam lr (defaults to learning_rate)
+    end: 0.00003    # final lr at end of training
+    start_step: 0
 
 training:
   total_timesteps: 500000
