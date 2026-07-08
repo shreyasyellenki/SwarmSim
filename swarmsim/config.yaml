@@ -70,6 +70,11 @@ reward:
   message_heading_aux: 0.0  # supervised msg[:2] ≈ velocity heading (0 disables)
   repulsion_radius: 3 # grid cells; penalty when another agent is closer than this
   mode: team_new_cells  # team_new_cells | spread
+  gamma_schedule:
+    enabled: false
+    start: 0.01       # revisit penalty early (learn movement)
+    end: 0.5          # revisit penalty late (push to new cells)
+    start_step: 0
 
 policy:
   init_log_std: 0.0   # initial log std of movement Gaussian (std=exp(this)); lower = less action noise

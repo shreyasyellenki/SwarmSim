@@ -12,7 +12,7 @@ import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
-from swarmsim.env.swarm_env import load_config, make_swarm_env
+from swarmsim.env.swarm_env import SwarmExplorationScenario, load_config, make_swarm_env
 from swarmsim.policy.network import CentralizedCritic, SwarmActor, swarm_global_dim, swarm_obs_dim
 from swarmsim.policy.ppo import PPOConfig, SwarmPPOTrainer, SwarmRolloutBuffer, _params_finite
 
@@ -44,6 +44,7 @@ def apply_training_schedules(
     cfg: dict,
     global_step: int,
     total_timesteps: int,
+    scenario: SwarmExplorationScenario | None = None,
 ) -> dict[str, float]:
     """Update log_std and entropy_coef from config schedules. Returns logged values."""
     policy_cfg = cfg.get("policy", {})
@@ -91,6 +92,22 @@ def apply_training_schedules(
         trainer.set_learning_rate(lr)
         logged["learning_rate"] = lr
 
+    reward_cfg = cfg.get("reward", {})
+    gamma_sched = reward_cfg.get("gamma_schedule", {})
+    if gamma_sched.get("enabled"):
+        start_step = int(gamma_sched.get("start_step", 0))
+        revisit_gamma = delayed_linear_schedule(
+            float(gamma_sched.get("start", 0.01)),
+            float(gamma_sched.get("end", 0.5)),
+            global_step,
+            start_step,
+            total_timesteps,
+        )
+        reward_cfg["gamma"] = revisit_gamma
+        if scenario is not None:
+            scenario.reward_cfg["gamma"] = revisit_gamma
+        logged["revisit_gamma"] = revisit_gamma
+
     return logged
 
 
@@ -108,6 +125,9 @@ def train(
     entropy_anneal: bool = False,
     lr_anneal: bool = False,
     lr_final: float | None = None,
+    gamma_anneal: bool = False,
+    gamma_start: float | None = None,
+    gamma_end: float | None = None,
     use_gru: bool | None = None,
     reward_mode: str | None = None,
     global_map_downsample: int | None = None,
@@ -161,6 +181,17 @@ def train(
         lr_sched.setdefault("start", ppo_cfg.get("learning_rate", 3e-4))
         if lr_final is not None:
             lr_sched["end"] = lr_final
+    if gamma_anneal:
+        reward_cfg = cfg.setdefault("reward", {})
+        gamma_sched = reward_cfg.setdefault("gamma_schedule", {})
+        gamma_sched["enabled"] = True
+        gamma_sched.setdefault("start", 0.01)
+        gamma_sched.setdefault("end", 0.5)
+        if gamma_start is not None:
+            gamma_sched["start"] = gamma_start
+        if gamma_end is not None:
+            gamma_sched["end"] = gamma_end
+        reward_cfg["gamma"] = float(gamma_sched["start"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ppo_cfg = PPOConfig.from_config(cfg)
     if rollout_steps is not None:
@@ -255,7 +286,9 @@ def train(
     hidden_states = [actor.initial_hidden(num_envs, device) for _ in range(num_agents)]
 
     while global_step < total_timesteps:
-        schedule_vals = apply_training_schedules(actor, trainer, cfg, global_step, total_timesteps)
+        schedule_vals = apply_training_schedules(
+            actor, trainer, cfg, global_step, total_timesteps, scenario=scenario
+        )
         while not buffer.full() and global_step < total_timesteps:
             global_state = scenario.build_global_state()
             actions_to_env = []
@@ -401,7 +434,7 @@ def train(
 
     checkpoint = build_checkpoint()
 
-    apply_training_schedules(actor, trainer, cfg, total_timesteps, total_timesteps)
+    apply_training_schedules(actor, trainer, cfg, total_timesteps, total_timesteps, scenario=scenario)
     checkpoint = build_checkpoint()
 
     if not _params_finite(actor, critic) and last_good is not None:
@@ -446,7 +479,24 @@ if __name__ == "__main__":
         "--lr-final",
         type=float,
         default=None,
-        help="Target learning rate at end of lr anneal (e.g. 3e-5)",
+        help="Target learning rate at end of lr anneal (e.g. 3e-5; 0 decays to zero)",
+    )
+    parser.add_argument(
+        "--gamma-anneal",
+        action="store_true",
+        help="Linearly increase revisit penalty (reward.gamma) over training",
+    )
+    parser.add_argument(
+        "--gamma-start",
+        type=float,
+        default=None,
+        help="Initial revisit penalty when --gamma-anneal (default 0.01)",
+    )
+    parser.add_argument(
+        "--gamma-end",
+        type=float,
+        default=None,
+        help="Final revisit penalty when --gamma-anneal (default 0.5)",
     )
     parser.add_argument("--use-gru", action="store_true", help="Use a recurrent (GRU) actor with per-episode hidden state")
     parser.add_argument("--reward-mode", choices=["team_new_cells", "spread"], default=None)
@@ -512,6 +562,9 @@ if __name__ == "__main__":
         entropy_anneal=args.entropy_anneal,
         lr_anneal=args.lr_anneal,
         lr_final=args.lr_final,
+        gamma_anneal=args.gamma_anneal,
+        gamma_start=args.gamma_start,
+        gamma_end=args.gamma_end,
         use_gru=True if args.use_gru else None,
         reward_mode=args.reward_mode,
         global_map_downsample=0 if args.no_global_map else None,
