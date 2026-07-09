@@ -36,6 +36,8 @@ def apply_checkpoint_config(cfg: dict, checkpoint: dict) -> dict:
         updated["reward"]["message_heading_aux"] = checkpoint["message_heading_aux"]
     if "episode_horizon" in checkpoint:
         updated["env"]["episode_horizon"] = checkpoint["episode_horizon"]
+    if "local_window_k" in checkpoint:
+        updated["env"]["local_window_k"] = checkpoint["local_window_k"]
     return updated
 
 

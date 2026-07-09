@@ -138,6 +138,7 @@ def train(
     diversity: float | None = None,
     message_heading_aux: float | None = None,
     episode_horizon: int | None = None,
+    local_window_k: int | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
@@ -158,6 +159,8 @@ def train(
         cfg["reward"]["message_heading_aux"] = message_heading_aux
     if episode_horizon is not None:
         cfg["env"]["episode_horizon"] = episode_horizon
+    if local_window_k is not None:
+        cfg["env"]["local_window_k"] = local_window_k
     if global_map_downsample is not None:
         cfg["env"]["global_map_downsample"] = global_map_downsample
     if init_log_std is not None:
@@ -276,6 +279,7 @@ def train(
             "diversity": cfg["reward"].get("diversity", 0.0),
             "message_heading_aux": cfg["reward"].get("message_heading_aux", 0.0),
             "episode_horizon": env_cfg.get("episode_horizon", 500),
+            "local_window_k": env_cfg.get("local_window_k", 5),
             "std_anneal_start": policy_cfg.get("std_schedule", {}).get("start_step", 0),
             "std_final": float(
                 math.exp(policy_cfg.get("std_schedule", {}).get("end_log_std", math.log(0.7)))
@@ -547,6 +551,12 @@ if __name__ == "__main__":
         default=None,
         help="Max steps per episode (env.episode_horizon)",
     )
+    parser.add_argument(
+        "--local-window",
+        type=int,
+        default=None,
+        help="Local observation window size in grid cells (env.local_window_k)",
+    )
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -575,4 +585,5 @@ if __name__ == "__main__":
         diversity=args.diversity,
         message_heading_aux=args.message_heading_aux,
         episode_horizon=args.episode_horizon,
+        local_window_k=args.local_window,
     )
