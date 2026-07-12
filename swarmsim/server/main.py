@@ -95,6 +95,9 @@ class SwarmSimulator:
             grid=self.scenario.get_grid_numpy(0),
             agents=agents,
             comm_links=self.scenario.get_comm_links(0),
+            obstacles=self.scenario.get_obstacle_numpy(0)
+            if self.scenario.obstacle_mode != "none"
+            else None,
         )
 
 

@@ -139,6 +139,7 @@ def train(
     message_heading_aux: float | None = None,
     episode_horizon: int | None = None,
     local_window_k: int | None = None,
+    obstacle_mode: str | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
@@ -161,6 +162,8 @@ def train(
         cfg["env"]["episode_horizon"] = episode_horizon
     if local_window_k is not None:
         cfg["env"]["local_window_k"] = local_window_k
+    if obstacle_mode is not None:
+        cfg["env"]["obstacle_mode"] = obstacle_mode
     if global_map_downsample is not None:
         cfg["env"]["global_map_downsample"] = global_map_downsample
     if init_log_std is not None:
@@ -210,10 +213,17 @@ def train(
     scenario = env.scenario
     num_agents = env_cfg["num_agents"]
     global_map_cells = (env_cfg.get("global_map_downsample", 0) or 0) ** 2
+    include_obstacles = env_cfg.get("obstacle_mode", "none") != "none"
     obs_dim = swarm_obs_dim(
-        env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], global_map_cells
+        env_cfg["local_window_k"],
+        env_cfg["max_neighbors"],
+        comm_cfg["message_dim"],
+        global_map_cells,
+        include_obstacles=include_obstacles,
     )
-    global_dim = swarm_global_dim(num_agents, cfg["critic"]["grid_downsample"])
+    global_dim = swarm_global_dim(
+        num_agents, cfg["critic"]["grid_downsample"], include_obstacles=include_obstacles
+    )
 
     actor_log_std = cfg.get("policy", {}).get("init_log_std", 0.0)
     use_gru_flag = bool(policy_cfg.get("use_gru", False))
@@ -280,6 +290,7 @@ def train(
             "message_heading_aux": cfg["reward"].get("message_heading_aux", 0.0),
             "episode_horizon": env_cfg.get("episode_horizon", 500),
             "local_window_k": env_cfg.get("local_window_k", 5),
+            "obstacle_mode": env_cfg.get("obstacle_mode", "none"),
             "std_anneal_start": policy_cfg.get("std_schedule", {}).get("start_step", 0),
             "std_final": float(
                 math.exp(policy_cfg.get("std_schedule", {}).get("end_log_std", math.log(0.7)))
@@ -557,6 +568,12 @@ if __name__ == "__main__":
         default=None,
         help="Local observation window size in grid cells (env.local_window_k)",
     )
+    parser.add_argument(
+        "--obstacle-mode",
+        choices=["none", "scattered", "rooms", "maze"],
+        default=None,
+        help="Obstacle layout mode (env.obstacle_mode)",
+    )
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -586,4 +603,5 @@ if __name__ == "__main__":
         message_heading_aux=args.message_heading_aux,
         episode_horizon=args.episode_horizon,
         local_window_k=args.local_window,
+        obstacle_mode=args.obstacle_mode,
     )

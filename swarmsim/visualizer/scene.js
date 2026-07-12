@@ -6,6 +6,7 @@ const AGENT_COLORS = [
   0x4285f4, 0x34a853, 0xea4335, 0xfbbc04, 0xa142f4, 0x00bcd4,
 ];
 const UNEXPLORED = { r: 40, g: 44, b: 52 };
+const WALL = { r: 18, g: 20, b: 24 };
 
 const container = document.getElementById("canvas-container");
 const coverageEl = document.getElementById("coverage");
@@ -64,15 +65,20 @@ function idToColor(id) {
   return { r: (hex >> 16) & 255, g: (hex >> 8) & 255, b: hex & 255 };
 }
 
-function updateGrid(gridB64) {
+function updateGrid(gridB64, obstaclesB64) {
   const raw = Uint8Array.from(atob(gridB64), (c) => c.charCodeAt(0));
+  const obsRaw = obstaclesB64
+    ? Uint8Array.from(atob(obstaclesB64), (c) => c.charCodeAt(0))
+    : null;
   const n = GRID_SIZE;
   // NumPy sends explored[cx, cy] row-major (cx * n + cy).
   // Flip Y and map cx -> texture X so cells align with agent normToWorld().
   for (let cx = 0; cx < n; cx++) {
     for (let cy = 0; cy < n; cy++) {
-      const agentId = raw[cx * n + cy];
-      const color = idToColor(agentId);
+      const idx = cx * n + cy;
+      const isWall = obsRaw && obsRaw[idx] > 0;
+      const agentId = isWall ? 0 : raw[idx];
+      const color = isWall ? WALL : idToColor(agentId);
       const ty = n - 1 - cy;
       const dst = (ty * n + cx) * 4;
       gridData[dst] = color.r;
@@ -135,7 +141,7 @@ function updateStats(state) {
 }
 
 function onState(state) {
-  updateGrid(state.grid);
+  updateGrid(state.grid, state.obstacles || null);
   updateAgents(state.agents);
   updateCommLinks(state.comm_links, state.agents);
   updateStats(state);

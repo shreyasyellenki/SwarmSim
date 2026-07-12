@@ -38,7 +38,18 @@ def apply_checkpoint_config(cfg: dict, checkpoint: dict) -> dict:
         updated["env"]["episode_horizon"] = checkpoint["episode_horizon"]
     if "local_window_k" in checkpoint:
         updated["env"]["local_window_k"] = checkpoint["local_window_k"]
+    if "obstacle_mode" in checkpoint:
+        updated["env"]["obstacle_mode"] = checkpoint["obstacle_mode"]
     return updated
+
+
+def _obstacles_enabled(cfg: dict, checkpoint: dict | None = None) -> bool:
+    mode = "none"
+    if checkpoint and "obstacle_mode" in checkpoint:
+        mode = checkpoint["obstacle_mode"]
+    else:
+        mode = cfg.get("env", {}).get("obstacle_mode", "none")
+    return mode != "none"
 
 
 def infer_global_map_downsample(checkpoint: dict, cfg: dict) -> int:
@@ -49,8 +60,13 @@ def infer_global_map_downsample(checkpoint: dict, cfg: dict) -> int:
     env_cfg = cfg["env"]
     comm_cfg = cfg["comm"]
     obs_dim = int(checkpoint["actor"]["body.0.weight"].shape[1])
+    include_obstacles = _obstacles_enabled(cfg, checkpoint)
     base_dim = swarm_obs_dim(
-        env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], 0
+        env_cfg["local_window_k"],
+        env_cfg["max_neighbors"],
+        comm_cfg["message_dim"],
+        0,
+        include_obstacles=include_obstacles,
     )
     extra = obs_dim - base_dim
     if extra == 0:
@@ -85,11 +101,20 @@ def load_policy(weights_path: Path, cfg: dict, device: torch.device):
     comm_mode = checkpoint.get("comm_mode", comm_cfg.get("mode", "full"))
     use_gru = checkpoint.get("use_gru", policy_cfg.get("use_gru", False))
     gru_hidden = checkpoint.get("gru_hidden", policy_cfg.get("gru_hidden", 128))
+    include_obstacles = _obstacles_enabled(cfg, checkpoint)
 
     obs_dim = swarm_obs_dim(
-        env_cfg["local_window_k"], env_cfg["max_neighbors"], comm_cfg["message_dim"], global_map_cells
+        env_cfg["local_window_k"],
+        env_cfg["max_neighbors"],
+        comm_cfg["message_dim"],
+        global_map_cells,
+        include_obstacles=include_obstacles,
     )
-    global_dim = swarm_global_dim(env_cfg["num_agents"], cfg["critic"]["grid_downsample"])
+    global_dim = swarm_global_dim(
+        env_cfg["num_agents"],
+        cfg["critic"]["grid_downsample"],
+        include_obstacles=include_obstacles,
+    )
 
     actor = SwarmActor(
         obs_dim,

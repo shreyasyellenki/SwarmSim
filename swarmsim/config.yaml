@@ -58,6 +58,12 @@ env:
   coverage_target: 0.85
   world_size: 1.0
   global_map_downsample: 8   # actor sees a DxD coarse coverage map (0 disables). See STORYLINE Exp 3.
+  obstacle_mode: none         # none | scattered | rooms | maze
+  n_obstacle_segments: 10     # Tier 1 scattered walls
+  max_segment_len: 4
+  min_segment_spacing: 2
+  min_spawn_dist: 6
+  min_reachable_fraction: 0.85
 
 reward:
   alpha: 1.0          # personal new-cell credit (spread mode) or team new cells (default)
@@ -67,6 +73,7 @@ reward:
   frontier: 0.0       # bonus for unexplored cells in local window (0 disables)
   diversity: 0.0      # heading-alignment penalty vs neighbors in comm range
   repulsion: 0.0      # proximity penalty weight (0 disables)
+  wall_penalty: 0.05  # penalty for attempting to move into an obstacle cell
   message_heading_aux: 0.0  # supervised msg[:2] ≈ velocity heading (0 disables)
   repulsion_radius: 3 # grid cells; penalty when another agent is closer than this
   mode: team_new_cells  # team_new_cells | spread

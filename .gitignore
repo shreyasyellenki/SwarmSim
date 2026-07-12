@@ -228,6 +228,7 @@ weights/bundle_*_comm_analysis/
 !weights/.gitkeep
 logs/
 STORYLINE.md
+OBSTACLE_MAZE_PLAN.md
 
 # Streamlit
 .streamlit/secrets.toml
