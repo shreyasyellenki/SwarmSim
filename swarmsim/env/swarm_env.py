@@ -203,7 +203,7 @@ class SwarmExplorationScenario(BaseScenario):
             0, 2**31, (1,), device=self.world.device
         ).squeeze()
         self._mark_all_agents(env_index)
-        self._update_communication_for_env(env_index)
+        self._update_communication()
 
     def _mark_all_agents(self, env_index: int | None = None):
         indices = [env_index] if env_index is not None else list(range(self.world.batch_dim))
@@ -237,35 +237,40 @@ class SwarmExplorationScenario(BaseScenario):
         if u.shape[-1] > 2:
             self.outgoing_messages[:, agent_index] = torch.tanh(u[..., 2:])
 
-    def _update_communication_for_env(self, env_index: int | None = None):
-        for receiver_id, receiver in enumerate(self.world.agents):
-            neighbors = []
-            for other_id, other in enumerate(self.world.agents):
-                if other_id == receiver_id:
-                    continue
-                delta = other.state.pos - receiver.state.pos
-                dist = torch.linalg.vector_norm(delta, dim=-1)
-                neighbors.append((dist, delta, other_id))
+    def _update_communication(self):
+        """Fill each agent's neighbor slots with its k nearest in-range peers.
 
-            neighbors.sort(key=lambda x: x[0].mean().item())
-            padded_rel = torch.zeros(
-                self.world.batch_dim, self.max_neighbors, 2, device=self.world.device
+        Selection is per environment: ranking by a batch-wide mean distance
+        would put the same peer in the same slot for every parallel env, so an
+        agent could receive messages from peers that are not actually its
+        nearest neighbours in its own env.
+        """
+        n_agents = self.num_agents
+        k = min(self.max_neighbors, n_agents - 1)
+        self.neighbor_rel_pos.zero_()
+        self.incoming_messages.zero_()
+        if k <= 0:
+            return
+
+        # positions [B, N, 2]; deltas[b, r, o] = pos[b, o] - pos[b, r]
+        positions = torch.stack([a.state.pos[:, :2] for a in self.world.agents], dim=1)
+        deltas = positions.unsqueeze(1) - positions.unsqueeze(2)
+        dists = torch.linalg.vector_norm(deltas, dim=-1)
+        self_pairs = torch.eye(n_agents, dtype=torch.bool, device=self.world.device)
+        dists = dists.masked_fill(self_pairs, float("inf"))
+
+        near_dist, near_idx = torch.topk(dists, k, dim=-1, largest=False)
+        in_range = (near_dist <= self.comm_radius_world).unsqueeze(-1).float()
+
+        rel = torch.gather(deltas, 2, near_idx.unsqueeze(-1).expand(-1, -1, -1, 2))
+        self.neighbor_rel_pos[:, :, :k] = rel * in_range
+
+        if self.comm_mode == "full":
+            broadcast = self.outgoing_messages.unsqueeze(1).expand(-1, n_agents, -1, -1)
+            msgs = torch.gather(
+                broadcast, 2, near_idx.unsqueeze(-1).expand(-1, -1, -1, self.message_dim)
             )
-            padded_msg = torch.zeros(
-                self.world.batch_dim,
-                self.max_neighbors,
-                self.message_dim,
-                device=self.world.device,
-            )
-
-            for slot, (dist, delta, other_id) in enumerate(neighbors[: self.max_neighbors]):
-                mask = (dist <= self.comm_radius_world).unsqueeze(-1).float()
-                padded_rel[:, slot] = delta * mask
-                if self.comm_mode == "full":
-                    padded_msg[:, slot] = self.outgoing_messages[:, other_id] * mask
-
-            self.neighbor_rel_pos[:, receiver_id] = padded_rel
-            self.incoming_messages[:, receiver_id] = padded_msg
+            self.incoming_messages[:, :, :k] = msgs * in_range
 
     def post_step(self):
         prev_coverage = self.coverage.clone()
@@ -274,7 +279,7 @@ class SwarmExplorationScenario(BaseScenario):
         if self.obstacle_mode != "none":
             self._resolve_obstacle_collisions()
         self.coverage_delta = self.coverage - prev_coverage
-        self._update_communication_for_env()
+        self._update_communication()
 
     def _resolve_obstacle_collisions(self):
         for agent_index, agent in enumerate(self.world.agents):

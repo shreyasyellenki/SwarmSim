@@ -251,7 +251,14 @@ def train(
     steps_per_rollout = ppo_cfg.rollout_steps
     hidden_dim = actor.gru_hidden
     buffer = SwarmRolloutBuffer(
-        steps_per_rollout * num_agents * num_envs, obs_dim, action_dim, device, hidden_dim=hidden_dim
+        rollout_steps=steps_per_rollout,
+        num_agents=num_agents,
+        num_envs=num_envs,
+        obs_dim=obs_dim,
+        global_dim=global_dim,
+        action_dim=action_dim,
+        device=device,
+        hidden_dim=hidden_dim,
     )
 
     weights_dir = Path(__file__).resolve().parents[2] / train_cfg["weights_dir"]
@@ -306,15 +313,17 @@ def train(
         )
         while not buffer.full() and global_step < total_timesteps:
             global_state = scenario.build_global_state()
+            with torch.no_grad():
+                value = critic(global_state)
+
             actions_to_env = []
-            step_records = []
+            step_obs, step_actions, step_log_probs, step_hidden = [], [], [], []
 
             for agent_idx in range(num_agents):
                 agent_obs = torch.nan_to_num(obs[agent_idx].to(device), nan=0.0, posinf=1.0, neginf=-1.0)
                 h_in = hidden_states[agent_idx]
                 with torch.no_grad():
                     move, message, log_prob, _, h_out = actor.act(agent_obs, h_in)
-                    value = critic(global_state)
                 hidden_states[agent_idx] = h_out
 
                 if comm_cfg["mode"] == "none" or message is None:
@@ -323,41 +332,54 @@ def train(
                     full_action = torch.cat([move, message], dim=-1)
 
                 actions_to_env.append(full_action)
-                step_records.append((agent_idx, agent_obs, global_state, full_action, log_prob, value, h_in))
+                step_obs.append(agent_obs)
+                step_actions.append(full_action)
+                step_log_probs.append(log_prob)
+                if h_in is not None:
+                    step_hidden.append(h_in)
 
-            next_obs, rews, dones, _ = env.step(actions_to_env)
+            next_obs, rews, _, _ = env.step(actions_to_env)
+
+            # VMAS collapses terminated and truncated into one flag. Split them
+            # so hitting the horizon still bootstraps instead of being treated
+            # as a real terminal state.
+            terminated = scenario.done().clone().float()
+            truncated = (env.steps >= env.max_steps).float()
+            episode_end = (terminated + truncated).clamp(max=1.0).bool()
+
+            # Value of the state that actually followed this step, captured
+            # before any reset wipes it.
+            with torch.no_grad():
+                next_value = critic(scenario.build_global_state())
 
             team_reward = sum(rews) / float(num_agents)
-            done_flag = dones[0] if isinstance(dones, list) else dones
-            if done_flag.ndim > 1:
-                done_flag = done_flag.any(dim=-1)
+            agent_vel = torch.stack([a.state.vel[:, :2] for a in scenario.world.agents])
 
-            for agent_idx, agent_obs, gs, action, log_prob, value, h_in in step_records:
-                agent_vel = scenario.world.agents[agent_idx].state.vel[:, :2]
-                for env_i in range(num_envs):
-                    buffer.add(
-                        agent_obs[env_i],
-                        gs[env_i],
-                        action[env_i],
-                        team_reward[env_i],
-                        done_flag[env_i].float(),
-                        value[env_i],
-                        log_prob[env_i],
-                        hidden_in=h_in[env_i] if h_in is not None else None,
-                        velocity=agent_vel[env_i],
-                    )
-
-            if actor.use_gru and done_flag.any():
-                for agent_idx in range(num_agents):
-                    hidden_states[agent_idx][done_flag] = 0.0
+            buffer.add_step(
+                obs=torch.stack(step_obs),
+                global_state=global_state.unsqueeze(0).expand(num_agents, -1, -1),
+                actions=torch.stack(step_actions),
+                velocities=agent_vel,
+                rewards=team_reward.unsqueeze(0).expand(num_agents, -1),
+                values=value.unsqueeze(0).expand(num_agents, -1),
+                next_values=next_value.unsqueeze(0).expand(num_agents, -1),
+                terminated=terminated.unsqueeze(0).expand(num_agents, -1),
+                truncated=truncated.unsqueeze(0).expand(num_agents, -1),
+                log_probs=torch.stack(step_log_probs),
+                hidden_in=torch.stack(step_hidden) if step_hidden else None,
+            )
 
             global_step += num_envs
             episode_returns += team_reward
-            if done_flag.any():
-                finished = int(done_flag.sum().item())
-                mean_return = episode_returns[done_flag].mean().item() if finished > 0 else 0.0
-                writer.add_scalar("train/episode_return", mean_return, episode_count)
-                writer.add_scalar("train/coverage", scenario.coverage.mean().item(), episode_count)
+
+            if episode_end.any():
+                finished = int(episode_end.sum().item())
+                writer.add_scalar(
+                    "train/episode_return", episode_returns[episode_end].mean().item(), episode_count
+                )
+                writer.add_scalar(
+                    "train/coverage", scenario.coverage[episode_end].mean().item(), episode_count
+                )
                 writer.add_scalar(
                     "train/message_l2",
                     scenario.outgoing_messages.norm(dim=-1).mean().item(),
@@ -383,8 +405,16 @@ def train(
                     scenario._diversity_penalty.mean().item(),
                     episode_count,
                 )
-                episode_returns[done_flag] = 0.0
+                episode_returns[episode_end] = 0.0
                 episode_count += finished
+
+                # VMAS never auto-resets. Without this the run stays inside a
+                # single permanently-done episode after the first horizon.
+                for env_i in torch.nonzero(episode_end).flatten().tolist():
+                    next_obs = env.reset_at(env_i)
+                if actor.use_gru:
+                    for agent_idx in range(num_agents):
+                        hidden_states[agent_idx][episode_end] = 0.0
 
             obs = next_obs
 
@@ -398,12 +428,7 @@ def train(
             else:
                 raise RuntimeError("Policy parameters became non-finite and no checkpoint is available.")
 
-        with torch.no_grad():
-            last_global = scenario.build_global_state()
-            last_value = critic(last_global).mean()
-        buffer.compute_gae(last_value, ppo_cfg.gamma, ppo_cfg.gae_lambda)
-        buffer.advantages[: buffer.ptr] = torch.clamp(buffer.advantages[: buffer.ptr], -10.0, 10.0)
-        buffer.returns[: buffer.ptr] = torch.clamp(buffer.returns[: buffer.ptr], -20.0, 20.0)
+        buffer.compute_gae(ppo_cfg.gamma, ppo_cfg.gae_lambda)
 
         pre_update = {
             "actor": {k: v.clone() for k, v in actor.state_dict().items()},
