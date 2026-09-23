@@ -43,6 +43,8 @@ training:
   swarm_total_timesteps: 1000000
   log_interval: 10
   save_interval: 50
+  eval_interval: 25        # PPO updates between deterministic evals (0 disables)
+  eval_episodes: 5         # fixed-seed episodes per deterministic eval
   weights_dir: weights
   mujoco_policy: mujoco_policy.pt
   swarm_policy: swarm_policy.pt

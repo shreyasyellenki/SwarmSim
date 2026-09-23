@@ -21,10 +21,10 @@ def main():
     results = {}
     for mode in ("none", "null", "full"):
         weights = args.weights_dir / f"swarm_policy_{mode}.pt"
+        # No fallback to a generic checkpoint: evaluating one policy under
+        # three labels silently fabricates an ablation.
         if not weights.exists():
-            weights = args.weights_dir / "swarm_policy.pt"
-        if not weights.exists():
-            print(f"Skipping {mode}: weights not found at {weights}")
+            print(f"Skipping {mode}: no checkpoint at {weights}")
             continue
         results[mode] = evaluate(weights, comm_mode=mode, episodes=args.episodes)
 
@@ -32,9 +32,16 @@ def main():
     args.output.write_text(json.dumps(results, indent=2))
     print(f"Ablation results written to {args.output}")
     for mode, res in results.items():
+        cov = res["final_coverage"]
+        auc = res["coverage_auc"]
         print(
-            f"  {mode}: mean_time={res['mean_time_to_threshold']:.1f} "
-            f"(±{res['std_time_to_threshold']:.1f}), coverage={res['mean_final_coverage']:.2%}"
+            f"  {mode}: coverage={cov['mean']:.2%} ±{cov['ci95']:.2%} (95% CI, n={cov['n']}), "
+            f"auc={auc['mean']:.3f}"
+        )
+    if len(results) > 1:
+        print(
+            "\nNote: these are single-training-run conditions. Differences smaller than the "
+            "seed-to-seed spread are not evidence. See scripts/run_multiseed.py."
         )
 
 

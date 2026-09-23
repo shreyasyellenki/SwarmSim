@@ -47,7 +47,7 @@ def collect_message_data(cfg: dict, weights_path: Path, num_episodes: int = 10) 
                 heading = float(np.arctan2(vel[1], vel[0]))
                 speed = float(np.linalg.norm(vel[:2]))
                 msg = scenario.outgoing_messages[0, i].cpu().numpy()
-                local_patch = scenario._local_patch(agent)[0].cpu().numpy()
+                local_patch = scenario._local_explored_patch(i)[0].cpu().numpy()
                 local_unexplored = float(1.0 - local_patch.mean())
                 new_cell = float(scenario.new_cells[0].item())
 

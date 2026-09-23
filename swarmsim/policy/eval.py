@@ -136,7 +136,15 @@ def run_episode(
     device: torch.device,
     seed: int | None = None,
     deterministic: bool = True,
+    collect_trajectory: bool = True,
 ):
+    """Roll out one episode.
+
+    Returns ``(stats, trajectory)``. ``stats["coverage_curve"]`` holds coverage
+    after every step, which is what the uncensored metrics are derived from.
+    Set ``collect_trajectory=False`` to skip the per-step visualiser payload,
+    which dominates runtime in large evaluations.
+    """
     env_cfg = cfg["env"]
     num_agents = env_cfg["num_agents"]
     obs = env.reset(seed=seed)
@@ -144,7 +152,9 @@ def run_episode(
     max_steps = env_cfg["episode_horizon"]
     coverage_threshold = cfg["eval"]["coverage_threshold"]
     time_to_threshold = max_steps
+    coverage = 0.0
 
+    coverage_curve: list[float] = []
     trajectory = []
     hidden_states = [actor.initial_hidden(1, device) for _ in range(num_agents)]
     while step < max_steps:
@@ -165,41 +175,131 @@ def run_episode(
 
         obs, _, dones, _ = env.step(actions)
         coverage = float(scenario.coverage[0].item())
+        coverage_curve.append(coverage)
         if time_to_threshold == max_steps and coverage >= coverage_threshold:
             time_to_threshold = step
 
-        agents = []
-        for i, agent in enumerate(scenario.world.agents):
-            pos = agent.state.pos[0].cpu().numpy()
-            vel = agent.state.vel[0].cpu().numpy()
-            heading = float(np.arctan2(vel[1], vel[0])) if np.linalg.norm(vel[:2]) > 1e-4 else 0.0
-            msg_mag = float(scenario.outgoing_messages[0, i].norm().item())
-            half = env_cfg["world_size"] / 2.0
-            agents.append(
-                {
-                    "id": i,
-                    "x": float((pos[0] + half) / env_cfg["world_size"]),
-                    "y": float((pos[1] + half) / env_cfg["world_size"]),
-                    "heading": heading,
-                    "msg_magnitude": msg_mag,
-                }
-            )
+        if collect_trajectory:
+            agents = []
+            for i, agent in enumerate(scenario.world.agents):
+                pos = agent.state.pos[0].cpu().numpy()
+                vel = agent.state.vel[0].cpu().numpy()
+                heading = (
+                    float(np.arctan2(vel[1], vel[0])) if np.linalg.norm(vel[:2]) > 1e-4 else 0.0
+                )
+                msg_mag = float(scenario.outgoing_messages[0, i].norm().item())
+                half = env_cfg["world_size"] / 2.0
+                agents.append(
+                    {
+                        "id": i,
+                        "x": float((pos[0] + half) / env_cfg["world_size"]),
+                        "y": float((pos[1] + half) / env_cfg["world_size"]),
+                        "heading": heading,
+                        "msg_magnitude": msg_mag,
+                    }
+                )
 
-        state = build_sim_state(
-            step=step,
-            coverage_pct=coverage,
-            grid=scenario.get_grid_numpy(0),
-            agents=agents,
-            comm_links=scenario.get_comm_links(0),
-        )
-        trajectory.append(state)
+            trajectory.append(
+                build_sim_state(
+                    step=step,
+                    coverage_pct=coverage,
+                    grid=scenario.get_grid_numpy(0),
+                    agents=agents,
+                    comm_links=scenario.get_comm_links(0),
+                )
+            )
         step += 1
 
         done = bool(dones.any().item()) if hasattr(dones, "any") else bool(dones)
         if done or coverage >= env_cfg["coverage_target"]:
             break
 
-    return time_to_threshold, coverage, trajectory
+    stats = {
+        "final_coverage": coverage,
+        "steps": step,
+        "time_to_threshold": time_to_threshold,
+        "reached_threshold": coverage >= coverage_threshold,
+        "coverage_curve": coverage_curve,
+        "max_steps": max_steps,
+    }
+    return stats, trajectory
+
+
+COVERAGE_THRESHOLDS = (0.10, 0.20, 0.30, 0.40, 0.50, 0.75, 0.90)
+
+
+def _summary(values) -> dict:
+    """Mean with dispersion and a 95% CI, for comparing runs that overlap."""
+    arr = np.asarray(values, dtype=float)
+    n = int(arr.size)
+    if n == 0:
+        return {"mean": float("nan"), "std": 0.0, "sem": 0.0, "ci95": 0.0, "n": 0}
+    std = float(arr.std(ddof=1)) if n > 1 else 0.0
+    sem = std / math.sqrt(n)
+    return {
+        "mean": float(arr.mean()),
+        "std": std,
+        "sem": sem,
+        "ci95": 1.96 * sem,
+        "median": float(np.median(arr)),
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+        "n": n,
+    }
+
+
+def _coverage_auc(curve: list[float], max_steps: int) -> float:
+    """Mean coverage over the full horizon, padding early finishes with the final value.
+
+    Without the padding an episode that terminates early by hitting the
+    coverage target would score lower than one that crawls to the horizon.
+    """
+    if not curve:
+        return 0.0
+    padded = curve + [curve[-1]] * (max_steps - len(curve))
+    return float(np.mean(padded[:max_steps]))
+
+
+def _threshold_stats(curves: list[list[float]], max_steps: int) -> dict:
+    """Per-threshold reach rate and time-to-reach among episodes that got there.
+
+    Reported separately because a mean over only the successful episodes is
+    meaningless without knowing how many succeeded.
+    """
+    out = {}
+    for thresh in COVERAGE_THRESHOLDS:
+        steps = []
+        for curve in curves:
+            hit = next((i for i, c in enumerate(curve) if c >= thresh), None)
+            if hit is not None:
+                steps.append(hit)
+        rate = len(steps) / len(curves) if curves else 0.0
+        out[f"{thresh:.2f}"] = {
+            "reach_rate": rate,
+            "censored_fraction": 1.0 - rate,
+            "mean_steps_if_reached": float(np.mean(steps)) if steps else None,
+            "median_steps_if_reached": float(np.median(steps)) if steps else None,
+        }
+    return out
+
+
+def resolve_comm_modes(cfg: dict, checkpoint: dict, requested: str | None) -> tuple[str, str]:
+    """Split the requested comm mode into (policy mode, channel delivery mode).
+
+    The policy mode is fixed by the checkpoint -- it decides whether a message
+    head exists and how wide the action is -- so only delivery can be
+    overridden at evaluation time.
+    """
+    policy_mode = checkpoint.get("comm_mode", cfg["comm"].get("mode", "full"))
+    if requested is None:
+        return policy_mode, policy_mode
+    if (requested == "none") != (policy_mode == "none"):
+        raise ValueError(
+            f"Cannot evaluate a '{policy_mode}' checkpoint with comm mode '{requested}': "
+            "'none' changes the action width and removes the message head, so it needs a "
+            "separately trained checkpoint. Use 'null' to ablate the channel instead."
+        )
+    return policy_mode, requested
 
 
 def evaluate(
@@ -207,13 +307,15 @@ def evaluate(
     comm_mode: str | None = None,
     episodes: int | None = None,
     deterministic: bool = True,
+    seeds: list[int] | None = None,
 ) -> dict:
     cfg = load_config()
-    if comm_mode:
-        cfg["comm"]["mode"] = comm_mode
-
     checkpoint = torch.load(weights_path, map_location="cpu", weights_only=False)
     cfg = cfg_for_checkpoint(cfg, checkpoint)
+
+    policy_mode, delivery = resolve_comm_modes(cfg, checkpoint, comm_mode)
+    cfg["comm"]["mode"] = policy_mode
+    cfg["comm"]["delivery"] = delivery
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env, _ = make_swarm_env(cfg, num_envs=1, device=str(device))
@@ -221,27 +323,47 @@ def evaluate(
     actor, _ = load_policy(weights_path, cfg, device)
 
     eval_cfg = cfg["eval"]
-    seeds = eval_cfg["seeds"][: eval_cfg["num_seeds"]]
+    if seeds is None:
+        seeds = eval_cfg["seeds"][: eval_cfg["num_seeds"]]
     episodes_per_seed = episodes or eval_cfg["episodes_per_seed"]
 
-    times = []
-    coverages = []
+    times, coverages, aucs, lengths, curves = [], [], [], [], []
     for seed in seeds:
         for ep in range(episodes_per_seed):
-            episode_seed = seed * 1000 + ep
-            t, cov, _ = run_episode(
-                env, actor, scenario, cfg, device, seed=episode_seed, deterministic=deterministic
+            stats, _ = run_episode(
+                env,
+                actor,
+                scenario,
+                cfg,
+                device,
+                seed=seed * 1000 + ep,
+                deterministic=deterministic,
+                collect_trajectory=False,
             )
-            times.append(t)
-            coverages.append(cov)
+            times.append(stats["time_to_threshold"])
+            coverages.append(stats["final_coverage"])
+            lengths.append(stats["steps"])
+            curves.append(stats["coverage_curve"])
+            aucs.append(_coverage_auc(stats["coverage_curve"], stats["max_steps"]))
 
+    max_steps = cfg["env"]["episode_horizon"]
     results = {
-        "metric": eval_cfg["metric"],
+        "metric": "final_coverage",
+        "num_episodes": len(times),
+        "comm_mode": policy_mode,
+        "comm_delivery": delivery,
+        "deterministic": deterministic,
+        "final_coverage": _summary(coverages),
+        "coverage_auc": _summary(aucs),
+        "episode_steps": _summary(lengths),
+        "thresholds": _threshold_stats(curves, max_steps),
+        # Retained so existing bundle scripts keep working. This metric is
+        # censored at the horizon whenever the policy never reaches 90%.
         "mean_time_to_threshold": float(np.mean(times)),
         "std_time_to_threshold": float(np.std(times)),
         "mean_final_coverage": float(np.mean(coverages)),
-        "num_episodes": len(times),
-        "comm_mode": cfg["comm"]["mode"],
+        "legacy_metric": cfg["eval"]["metric"],
+        "legacy_censored_fraction": float(np.mean([t == max_steps for t in times])),
     }
     return results
 
@@ -259,14 +381,15 @@ if __name__ == "__main__":
 
     if args.export:
         cfg = load_config()
-        if args.comm_mode:
-            cfg["comm"]["mode"] = args.comm_mode
         checkpoint = torch.load(args.weights, map_location="cpu", weights_only=False)
         cfg = cfg_for_checkpoint(cfg, checkpoint)
+        policy_mode, delivery = resolve_comm_modes(cfg, checkpoint, args.comm_mode)
+        cfg["comm"]["mode"] = policy_mode
+        cfg["comm"]["delivery"] = delivery
         device = torch.device("cpu")
         env, _ = make_swarm_env(cfg, num_envs=1, device="cpu")
         actor, _ = load_policy(args.weights, cfg, device)
-        _, _, traj = run_episode(
+        _, traj = run_episode(
             env, actor, env.scenario, cfg, device, seed=0, deterministic=deterministic
         )
         args.export.write_text(json.dumps(traj))

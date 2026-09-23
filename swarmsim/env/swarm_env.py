@@ -41,6 +41,10 @@ class SwarmExplorationScenario(BaseScenario):
         self.world_size = env_cfg["world_size"]
         self.message_dim = comm_cfg["message_dim"]
         self.comm_mode = comm_cfg.get("mode", "full")
+        # Whether the channel actually delivers messages. Normally follows
+        # comm_mode, but evaluation can force it to "null" to ablate the
+        # channel on a checkpoint that was trained with a message head.
+        self.comm_delivery = comm_cfg.get("delivery") or self.comm_mode
         self.coverage_target = env_cfg["coverage_target"]
         self.reward_cfg = cfg["reward"]
         self.obstacle_mode = env_cfg.get("obstacle_mode", "none")
@@ -117,6 +121,10 @@ class SwarmExplorationScenario(BaseScenario):
         )
         self._wall_hit = torch.zeros(batch_dim, self.num_agents, device=device)
         self._prev_positions: list[torch.Tensor] = []
+        # Agent grid cells, refreshed once per step instead of recomputed by
+        # every consumer. See _refresh_agent_cells.
+        self._agent_cx = torch.zeros(batch_dim, self.num_agents, device=device, dtype=torch.long)
+        self._agent_cy = torch.zeros(batch_dim, self.num_agents, device=device, dtype=torch.long)
         self._layout_seed = torch.randint(0, 2**31, (batch_dim,), device=device)
 
         return world
@@ -126,6 +134,15 @@ class SwarmExplorationScenario(BaseScenario):
         cx = ((pos[..., 0] + half) / self.world_size * self.grid_size).long().clamp(0, self.grid_size - 1)
         cy = ((pos[..., 1] + half) / self.world_size * self.grid_size).long().clamp(0, self.grid_size - 1)
         return cx, cy
+
+    def _refresh_agent_cells(self):
+        """Recompute cached [batch, num_agents] grid cells for every agent.
+
+        Positions only move inside World.step and the obstacle rollback, so one
+        batched call per mutation replaces a per-agent call from each consumer.
+        """
+        positions = torch.stack([a.state.pos for a in self.world.agents], dim=1)
+        self._agent_cx, self._agent_cy = self._world_to_cell(positions)
 
     def _cell_to_world(self, cx: torch.Tensor, cy: torch.Tensor) -> torch.Tensor:
         """Cell centers in world coordinates [batch, 2]."""
@@ -206,26 +223,54 @@ class SwarmExplorationScenario(BaseScenario):
         self._update_communication()
 
     def _mark_all_agents(self, env_index: int | None = None):
-        indices = [env_index] if env_index is not None else list(range(self.world.batch_dim))
-        for idx in indices:
-            new_count = 0
-            if env_index is None or idx == env_index:
-                self.agent_new_cells[idx].zero_()
-            for agent_id, agent in enumerate(self.world.agents):
-                cx, cy = self._world_to_cell(agent.state.pos)
-                cx_i, cy_i = cx[idx].item(), cy[idx].item()
-                if self.obstacle_mode != "none" and self.obstacles[idx, cx_i, cy_i]:
-                    continue
-                self.visit_count[idx, cx_i, cy_i] += 1
-                if self.explored[idx, cx_i, cy_i] == 0:
-                    self.explored[idx, cx_i, cy_i] = agent_id + 1
-                    new_count += 1
-                    self.agent_new_cells[idx, agent_id] += 1.0
-            self.new_cells[idx] = float(new_count)
-            explored_open = (self.explored[idx] > 0) & (~self.obstacles[idx])
-            explored_cells = explored_open.sum().float()
-            reachable = self.reachable_cells[idx].float().clamp(min=1.0)
-            self.coverage[idx] = explored_cells / reachable
+        """Stamp every agent's cell as explored and refresh coverage.
+
+        When several agents share a previously unexplored cell, the lowest
+        agent id claims it and is the only one credited, matching the original
+        sequential loop; visit_count still counts every occupant.
+        """
+        self._refresh_agent_cells()
+        device = self.world.device
+        batch, n_agents, grid = self.world.batch_dim, self.num_agents, self.grid_size
+        cx, cy = self._agent_cx, self._agent_cy
+
+        env_mask = torch.zeros(batch, dtype=torch.bool, device=device)
+        if env_index is None:
+            env_mask.fill_(True)
+        else:
+            env_mask[env_index] = True
+
+        batch_idx = torch.arange(batch, device=device).unsqueeze(1).expand(batch, n_agents)
+        valid = env_mask.unsqueeze(1).expand(batch, n_agents).clone()
+        if self.obstacle_mode != "none":
+            valid &= ~self.obstacles[batch_idx, cx, cy]
+
+        flat = (batch_idx * grid + cx) * grid + cy
+
+        visit_flat = self.visit_count.view(-1)
+        occupied = flat[valid]
+        visit_flat.scatter_add_(0, occupied, torch.ones_like(occupied, dtype=visit_flat.dtype))
+
+        explored_flat = self.explored.view(-1)
+        eligible = valid & (explored_flat[flat] == 0)
+        agent_ids = torch.arange(1, n_agents + 1, device=device).unsqueeze(0).expand(batch, n_agents)
+        claim = torch.full((batch * grid * grid,), n_agents + 1, dtype=torch.long, device=device)
+        claim.scatter_reduce_(0, flat[eligible], agent_ids[eligible], reduce="amin")
+        claimed_pos = torch.nonzero(claim <= n_agents).flatten()
+        explored_flat[claimed_pos] = claim[claimed_pos].to(explored_flat.dtype)
+
+        claimed_env = torch.div(claimed_pos, grid * grid, rounding_mode="floor")
+        self.new_cells = torch.where(
+            env_mask, torch.bincount(claimed_env, minlength=batch).float(), self.new_cells
+        )
+        self.agent_new_cells[env_mask] = 0.0
+        credit = claimed_env * n_agents + (claim[claimed_pos] - 1)
+        new_flat = self.agent_new_cells.view(-1)
+        new_flat.scatter_add_(0, credit, torch.ones_like(credit, dtype=new_flat.dtype))
+
+        explored_open = (self.explored > 0) & (~self.obstacles)
+        coverage = explored_open.sum(dim=(1, 2)).float() / self.reachable_cells.float().clamp(min=1.0)
+        self.coverage = torch.where(env_mask, coverage, self.coverage)
 
     def process_action(self, agent: Agent):
         u = agent.action.u
@@ -265,7 +310,7 @@ class SwarmExplorationScenario(BaseScenario):
         rel = torch.gather(deltas, 2, near_idx.unsqueeze(-1).expand(-1, -1, -1, 2))
         self.neighbor_rel_pos[:, :, :k] = rel * in_range
 
-        if self.comm_mode == "full":
+        if self.comm_delivery == "full":
             broadcast = self.outgoing_messages.unsqueeze(1).expand(-1, n_agents, -1, -1)
             msgs = torch.gather(
                 broadcast, 2, near_idx.unsqueeze(-1).expand(-1, -1, -1, self.message_dim)
@@ -278,52 +323,52 @@ class SwarmExplorationScenario(BaseScenario):
         self._mark_all_agents()
         if self.obstacle_mode != "none":
             self._resolve_obstacle_collisions()
+            # Rollback moved agents, so reward/observation need the new cells.
+            self._refresh_agent_cells()
         self.coverage_delta = self.coverage - prev_coverage
         self._update_communication()
 
     def _resolve_obstacle_collisions(self):
+        batch_idx = torch.arange(self.world.batch_dim, device=self.world.device).unsqueeze(1)
+        blocked_all = self.obstacles[batch_idx, self._agent_cx, self._agent_cy]
+        self._wall_hit.copy_(blocked_all.float())
+        if not blocked_all.any():
+            return
         for agent_index, agent in enumerate(self.world.agents):
-            cx, cy = self._world_to_cell(agent.state.pos)
-            batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
-            blocked = self.obstacles[batch_idx, cx, cy]
+            blocked = blocked_all[:, agent_index]
             if not blocked.any():
                 continue
             prev = self._prev_positions[agent_index]
             blocked_mask = blocked.unsqueeze(-1)
             agent.state.pos = torch.where(blocked_mask, prev, agent.state.pos)
             agent.state.vel = torch.where(blocked_mask, torch.zeros_like(agent.state.vel), agent.state.vel)
-            self._wall_hit[:, agent_index] = blocked.float()
 
-    def _local_patch(self, agent: Agent, source: torch.Tensor) -> torch.Tensor:
-        cx, cy = self._world_to_cell(agent.state.pos)
+    def _local_patch(self, agent_index: int, source: torch.Tensor) -> torch.Tensor:
+        cx, cy = self._agent_cx[:, agent_index], self._agent_cy[:, agent_index]
         half = self.local_k // 2
-        patch = torch.zeros(
-            self.world.batch_dim, self.local_k, self.local_k, device=self.world.device
-        )
-        for i in range(self.local_k):
-            for j in range(self.local_k):
-                gx = (cx - half + i).clamp(0, self.grid_size - 1)
-                gy = (cy - half + j).clamp(0, self.grid_size - 1)
-                batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
-                patch[:, i, j] = source[batch_idx, gx, gy].float()
-        return patch.reshape(self.world.batch_dim, -1)
+        offsets = torch.arange(self.local_k, device=self.world.device) - half
+        # Clamping each axis separately reproduces edge-replication padding.
+        gx = (cx.unsqueeze(-1) + offsets).clamp(0, self.grid_size - 1)
+        gy = (cy.unsqueeze(-1) + offsets).clamp(0, self.grid_size - 1)
+        batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
+        patch = source[batch_idx[:, None, None], gx[:, :, None], gy[:, None, :]]
+        return patch.reshape(self.world.batch_dim, -1).float()
 
-    def _local_explored_patch(self, agent: Agent) -> torch.Tensor:
+    def _local_explored_patch(self, agent_index: int) -> torch.Tensor:
         explored = (self.explored > 0).float()
-        return self._local_patch(agent, explored)
+        return self._local_patch(agent_index, explored)
 
-    def _local_obstacle_patch(self, agent: Agent) -> torch.Tensor:
-        return self._local_patch(agent, self.obstacles)
+    def _local_obstacle_patch(self, agent_index: int) -> torch.Tensor:
+        return self._local_patch(agent_index, self.obstacles)
 
     def _downsampled_grid(self, grid: torch.Tensor, factor: int) -> torch.Tensor:
         """Coarse (factor x factor) mean map, flattened per env."""
         block = self.grid_size // factor
-        down = torch.zeros(self.world.batch_dim, factor * factor, device=self.world.device)
-        for i in range(factor):
-            for j in range(factor):
-                region = grid[:, i * block : (i + 1) * block, j * block : (j + 1) * block]
-                down[:, i * factor + j] = region.float().mean(dim=(-1, -2))
-        return down
+        usable = factor * block  # drops a partial trailing block, as the loop did
+        blocked = grid[:, :usable, :usable].float().reshape(
+            self.world.batch_dim, factor, block, factor, block
+        )
+        return blocked.mean(dim=(2, 4)).reshape(self.world.batch_dim, -1)
 
     def _downsampled_explored(self, factor: int) -> torch.Tensor:
         """Coarse (factor x factor) fraction-explored map, flattened per env."""
@@ -352,37 +397,37 @@ class SwarmExplorationScenario(BaseScenario):
         time_decay = 1.0 - self._step_count.float().clamp(max=horizon) / horizon
         return delta * time_decay / visit_freq
 
-    def _repulsion_penalty_for(self, agent_index: int) -> torch.Tensor:
-        """Light penalty when another agent is within repulsion_radius grid cells."""
+    def _repulsion_penalties(self) -> torch.Tensor:
+        """Light penalty when another agent is within repulsion_radius grid cells.
+
+        Returns [batch, num_agents]; all pairs at once so reward() does not
+        rebuild the distance matrix once per agent.
+        """
         r = self.reward_cfg
         weight = float(r.get("repulsion", 0.0))
         radius = float(r.get("repulsion_radius", 3))
-        if weight <= 0.0:
-            return torch.zeros(self.world.batch_dim, device=self.world.device)
+        zeros = torch.zeros(self.world.batch_dim, self.num_agents, device=self.world.device)
+        if weight <= 0.0 or self.num_agents < 2:
+            return zeros
 
-        agent = self.world.agents[agent_index]
-        cx, cy = self._world_to_cell(agent.state.pos)
-        min_dist = torch.full(
-            (self.world.batch_dim,), float("inf"), device=self.world.device
-        )
-        for other_id, other in enumerate(self.world.agents):
-            if other_id == agent_index:
-                continue
-            ox, oy = self._world_to_cell(other.state.pos)
-            dist = torch.sqrt((cx - ox).float().pow(2) + (cy - oy).float().pow(2))
-            min_dist = torch.minimum(min_dist, dist)
+        cx = self._agent_cx.float()
+        cy = self._agent_cy.float()
+        dx = cx.unsqueeze(2) - cx.unsqueeze(1)
+        dy = cy.unsqueeze(2) - cy.unsqueeze(1)
+        dist = torch.sqrt(dx.pow(2) + dy.pow(2))
+        self_pairs = torch.eye(self.num_agents, dtype=torch.bool, device=self.world.device)
+        dist = dist.masked_fill(self_pairs, float("inf"))
+        min_dist = dist.min(dim=-1).values
+        return weight * (min_dist < radius).float()
 
-        too_close = (min_dist < radius).float()
-        return weight * too_close
-
-    def _frontier_bonus_for(self, agent: Agent) -> torch.Tensor:
+    def _frontier_bonus_for(self, agent_index: int) -> torch.Tensor:
         """Reward for being near unexplored cells (fraction unexplored in local window)."""
         weight = float(self.reward_cfg.get("frontier", 0.0))
         if weight <= 0.0:
             return torch.zeros(self.world.batch_dim, device=self.world.device)
 
-        local_explored = self._local_explored_patch(agent)
-        local_obstacles = self._local_obstacle_patch(agent)
+        local_explored = self._local_explored_patch(agent_index)
+        local_obstacles = self._local_obstacle_patch(agent_index)
         open_cells = 1.0 - local_obstacles
         unexplored_open = (1.0 - local_explored) * open_cells
         open_count = open_cells.sum(dim=-1).clamp(min=1.0)
@@ -430,12 +475,12 @@ class SwarmExplorationScenario(BaseScenario):
             [(pos[:, 0] + half) / self.world_size, (pos[:, 1] + half) / self.world_size], dim=-1
         )
         norm_vel = torch.clamp(vel[:, :2] / 0.12, -1.0, 1.0)
-        local = self._local_explored_patch(agent)
+        local = self._local_explored_patch(agent_index)
         rel = self.neighbor_rel_pos[:, agent_index].reshape(self.world.batch_dim, -1)
         msgs = self.incoming_messages[:, agent_index].reshape(self.world.batch_dim, -1)
         parts = [norm_pos, norm_vel, local, rel, msgs]
         if self.include_obstacle_obs:
-            parts.insert(3, self._local_obstacle_patch(agent))
+            parts.insert(3, self._local_obstacle_patch(agent_index))
         if self.global_map_cells > 0:
             parts.append(self._downsampled_explored(self.global_map_downsample))
         return torch.cat(parts, dim=-1)
@@ -443,13 +488,13 @@ class SwarmExplorationScenario(BaseScenario):
     def reward(self, agent: Agent):
         r = self.reward_cfg
         agent_index = self.world.agents.index(agent)
-        cx, cy = self._world_to_cell(agent.state.pos)
+        cx, cy = self._agent_cx[:, agent_index], self._agent_cy[:, agent_index]
         batch_idx = torch.arange(self.world.batch_dim, device=self.world.device)
         revisit = (self.visit_count[batch_idx, cx, cy] > 1).float()
 
         exploration = self._exploration_bonus_at(cx, cy)
-        repulsion = self._repulsion_penalty_for(agent_index)
-        frontier = self._frontier_bonus_for(agent)
+        repulsion = self._repulsion_penalties()[:, agent_index]
+        frontier = self._frontier_bonus_for(agent_index)
         diversity = self._heading_diversity_penalty_for(agent_index)
         self._exploration_bonus = exploration
         self._repulsion_penalty = repulsion
@@ -519,6 +564,7 @@ def make_swarm_env(
     num_envs: int = 8,
     device: str = "cpu",
     max_steps: int | None = None,
+    seed: int | None = None,
 ):
     cfg = config or load_config()
     if max_steps is None:
@@ -534,6 +580,7 @@ def make_swarm_env(
         device=device,
         continuous_actions=True,
         max_steps=max_steps,
+        seed=seed,
         config=cfg,
     )
     return env, action_dim

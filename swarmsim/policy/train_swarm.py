@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import math
 from pathlib import Path
@@ -11,10 +12,12 @@ import numpy as np
 import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
+from vmas.simulator.environment.environment import Environment as VmasEnvironment
 
 from swarmsim.env.swarm_env import SwarmExplorationScenario, load_config, make_swarm_env
 from swarmsim.policy.network import CentralizedCritic, SwarmActor, swarm_global_dim, swarm_obs_dim
 from swarmsim.policy.ppo import PPOConfig, SwarmPPOTrainer, SwarmRolloutBuffer, _params_finite
+from swarmsim.seeding import set_global_seeds
 
 
 def set_comm_mode(cfg: dict, mode: str) -> dict:
@@ -62,8 +65,11 @@ def apply_training_schedules(
             total_timesteps,
         )
         actor.log_std.data.fill_(log_std)
-        logged["log_std"] = log_std
-        logged["action_std"] = float(torch.exp(actor.log_std).mean().item())
+
+    # Logged unconditionally: with the schedule off this is the value the
+    # policy learned, which is the interesting case and was never recorded.
+    logged["log_std"] = float(actor.log_std.mean().item())
+    logged["action_std"] = float(torch.exp(actor.log_std).mean().item())
 
     ent_sched = policy_cfg.get("entropy_schedule", {})
     if ent_sched.get("enabled"):
@@ -111,6 +117,55 @@ def apply_training_schedules(
     return logged
 
 
+@contextlib.contextmanager
+def _preserved_vmas_rng():
+    """Run a block without consuming the environment RNG stream.
+
+    VMAS keeps one process-wide state list shared by every Environment and
+    swaps it in around each env method, so stepping a scratch eval env would
+    otherwise shift the training env's resets.
+    """
+    state = VmasEnvironment.vmas_random_state
+    saved = (state[0].clone(), copy.deepcopy(state[1]), copy.deepcopy(state[2]))
+    try:
+        yield
+    finally:
+        state[0], state[1], state[2] = saved
+
+
+def evaluate_during_training(
+    eval_env, actor, cfg: dict, device: torch.device, episodes: int, seed: int
+) -> float:
+    """Mean deterministic coverage over a few fixed-seed episodes.
+
+    Training coverage is measured under action noise, so on its own it cannot
+    show a train/eval gap.
+    """
+    num_agents = cfg["env"]["num_agents"]
+    max_steps = cfg["env"]["episode_horizon"]
+    scenario = eval_env.scenario
+    was_training = actor.training
+    actor.eval()
+    coverages = []
+    with _preserved_vmas_rng(), torch.no_grad():
+        for ep in range(episodes):
+            obs = eval_env.reset(seed=seed + ep)
+            hidden = [actor.initial_hidden(1, device) for _ in range(num_agents)]
+            for _ in range(max_steps):
+                actions = []
+                for i in range(num_agents):
+                    move, message, h = actor.act_deterministic(obs[i].to(device), hidden[i])
+                    hidden[i] = h
+                    actions.append(move if message is None else torch.cat([move, message], dim=-1))
+                obs, _, dones, _ = eval_env.step(actions)
+                if bool(dones.any().item()):
+                    break
+            coverages.append(float(scenario.coverage[0].item()))
+    if was_training:
+        actor.train()
+    return float(np.mean(coverages))
+
+
 def train(
     comm_mode: str = "full",
     total_timesteps: int | None = None,
@@ -140,6 +195,7 @@ def train(
     episode_horizon: int | None = None,
     local_window_k: int | None = None,
     obstacle_mode: str | None = None,
+    seed: int | None = None,
 ) -> Path:
     cfg = set_comm_mode(load_config(), comm_mode)
     if revisit_gamma is not None:
@@ -198,6 +254,9 @@ def train(
         if gamma_end is not None:
             gamma_sched["end"] = gamma_end
         reward_cfg["gamma"] = float(gamma_sched["start"])
+    # Seed before any module is constructed so weight init is reproducible too.
+    if seed is not None:
+        set_global_seeds(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ppo_cfg = PPOConfig.from_config(cfg)
     if rollout_steps is not None:
@@ -209,8 +268,14 @@ def train(
     if total_timesteps is None:
         total_timesteps = train_cfg["swarm_total_timesteps"]
 
-    env, action_dim = make_swarm_env(cfg, num_envs=num_envs, device=str(device))
+    env, action_dim = make_swarm_env(cfg, num_envs=num_envs, device=str(device), seed=seed)
     scenario = env.scenario
+
+    eval_interval = int(train_cfg.get("eval_interval", 0) or 0)
+    eval_episodes = int(train_cfg.get("eval_episodes", 5))
+    eval_env = None
+    if eval_interval > 0:
+        eval_env, _ = make_swarm_env(cfg, num_envs=1, device=str(device), seed=seed)
     num_agents = env_cfg["num_agents"]
     global_map_cells = (env_cfg.get("global_map_downsample", 0) or 0) ** 2
     include_obstacles = env_cfg.get("obstacle_mode", "none") != "none"
@@ -298,6 +363,7 @@ def train(
             "episode_horizon": env_cfg.get("episode_horizon", 500),
             "local_window_k": env_cfg.get("local_window_k", 5),
             "obstacle_mode": env_cfg.get("obstacle_mode", "none"),
+            "seed": seed,
             "std_anneal_start": policy_cfg.get("std_schedule", {}).get("start_step", 0),
             "std_final": float(
                 math.exp(policy_cfg.get("std_schedule", {}).get("end_log_std", math.log(0.7)))
@@ -469,6 +535,13 @@ def train(
             for k, v in schedule_vals.items():
                 writer.add_scalar(f"train/{k}", v, update_idx)
 
+        if eval_env is not None and update_idx % eval_interval == 0:
+            det_coverage = evaluate_during_training(
+                eval_env, actor, cfg, device, eval_episodes, seed=990001
+            )
+            writer.add_scalar("eval/coverage_deterministic", det_coverage, update_idx)
+            writer.add_scalar("eval/global_step", global_step, update_idx)
+
         if update_idx % train_cfg["save_interval"] == 0:
             torch.save(build_checkpoint(), save_path)
 
@@ -599,6 +672,12 @@ if __name__ == "__main__":
         default=None,
         help="Obstacle layout mode (env.obstacle_mode)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed weight init, action sampling and env resets (omit for nondeterministic)",
+    )
     args = parser.parse_args()
     train(
         args.comm_mode,
@@ -629,4 +708,5 @@ if __name__ == "__main__":
         episode_horizon=args.episode_horizon,
         local_window_k=args.local_window,
         obstacle_mode=args.obstacle_mode,
+        seed=args.seed,
     )
