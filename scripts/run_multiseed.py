@@ -23,7 +23,8 @@ import math
 import os
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -114,16 +115,28 @@ def main():
 
     if not args.eval_only:
         jobs = [(s, args.name, train_args, args.threads) for s in args.seeds]
+        started = time.time()
         print(f"Training {len(jobs)} seeds, {args.parallel} at a time "
-              f"({args.threads} thread(s) each)...")
+              f"({args.threads} thread(s) each)...", flush=True)
+        results = []
         if args.parallel > 1:
             with ProcessPoolExecutor(max_workers=args.parallel) as pool:
-                results = list(pool.map(train_one, jobs))
+                futures = [pool.submit(train_one, j) for j in jobs]
+                for fut in as_completed(futures):
+                    results.append(fut.result())
+                    seed, stem, ok, log = results[-1]
+                    print(f"  [{time.time() - started:7.0f}s] seed {seed}: "
+                          f"{'ok' if ok else 'FAILED'}  ({stem}.pt)", flush=True)
         else:
-            results = [train_one(j) for j in jobs]
-        for seed, stem, ok, log in results:
-            print(f"  seed {seed}: {'ok' if ok else 'FAILED'}  ({stem}.pt, log {log})")
+            for j in jobs:
+                results.append(train_one(j))
+                seed, stem, ok, log = results[-1]
+                print(f"  [{time.time() - started:7.0f}s] seed {seed}: "
+                      f"{'ok' if ok else 'FAILED'}  ({stem}.pt)", flush=True)
         if not all(ok for _, _, ok, _ in results):
+            for seed, stem, ok, log in results:
+                if not ok:
+                    print(f"  seed {seed} log: {log}")
             print("At least one run failed; aborting before aggregation.")
             return 1
 
@@ -141,7 +154,8 @@ def main():
                            deterministic=True, seeds=eval_seeds)
             per_mode[mode][seed] = res
             print(f"  seed {seed} delivery={mode}: "
-                  f"coverage={res['final_coverage']['mean']:.4f} auc={res['coverage_auc']['mean']:.4f}")
+                  f"coverage={res['final_coverage']['mean']:.4f} "
+                  f"auc={res['coverage_auc']['mean']:.4f}", flush=True)
 
     report = {"name": args.name, "train_args": train_args, "train_seeds": args.seeds,
               "eval_seeds": eval_seeds, "episodes_per_eval_seed": args.episodes,
