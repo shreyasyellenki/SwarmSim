@@ -222,13 +222,21 @@ __marimo__/
 runs/
 analysis_output/
 weights/*.pt
-weights/*_experiment_results.json
-weights/*_ablation_results.json
+weights/*.json
 weights/bundle_*_comm_analysis/
 !weights/.gitkeep
 logs/
 STORYLINE.md
 OBSTACLE_MAZE_PLAN.md
+
+# The `!swarmsim/env/**` rules above re-include caches the global pattern caught.
+swarmsim/env/__pycache__/
+
+# Local demo captures — too large for git history.
+*.mov
+
+# macOS
+.DS_Store
 
 # Streamlit
 .streamlit/secrets.toml
